@@ -646,101 +646,41 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(audio_group)
 
-        # ── Volume group ──────────────────────────────────────────────────────
-        vol_group = QGroupBox("Call Volume")
-        vg_layout = QHBoxLayout(vol_group)
-        vg_layout.setSpacing(8)
+        # ── Levels group (iOS-style slim sliders) ─────────────────────────────
+        levels_group = QGroupBox("Levels")
+        lg2 = QVBoxLayout(levels_group)
+        lg2.setContentsMargins(16, 12, 16, 12)
+        lg2.setSpacing(10)
 
-        btn_vol_down = QPushButton("−")
-        btn_vol_down.setFixedSize(36, 36)
-        btn_vol_down.setStyleSheet("font-size: 18px; font-weight: bold;")
-        btn_vol_down.clicked.connect(self._on_settings_vol_down)
-        vg_layout.addWidget(btn_vol_down)
+        def _ios_row(icon: str, slider_attr: str, label_attr: str,
+                     lo: int, hi: int, val: int, on_change):
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            ico = QLabel(icon)
+            ico.setFixedWidth(18)
+            ico.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            ico.setStyleSheet("font-size: 15px; background: transparent;")
+            row.addWidget(ico)
+            sl = QSlider(Qt.Orientation.Horizontal)
+            sl.setRange(lo, hi)
+            sl.setValue(val)
+            sl.setFixedHeight(20)
+            sl.valueChanged.connect(on_change)
+            setattr(self, slider_attr, sl)
+            row.addWidget(sl, 1)
+            lbl = QLabel(f"{val}%")
+            lbl.setFixedWidth(36)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            lbl.setStyleSheet("font-size: 11px; background: transparent;")
+            setattr(self, label_attr, lbl)
+            row.addWidget(lbl)
+            return row
 
-        self._vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self._vol_slider.setRange(0, 100)
-        self._vol_slider.setValue(80)
-        self._vol_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._vol_slider.setTickInterval(10)
-        self._vol_slider.valueChanged.connect(self._on_volume_slider)
-        vg_layout.addWidget(self._vol_slider, 1)
+        lg2.addLayout(_ios_row("🔊", "_vol_slider",      "_vol_label",      0, 100, 80, self._on_volume_slider))
+        lg2.addLayout(_ios_row("🔔", "_ring_vol_slider", "_ring_vol_label", 0, 100, 80, self._on_ring_volume_slider))
+        lg2.addLayout(_ios_row("🎤", "_mic_sens_slider", "_mic_sens_label", 0, 150, 80, self._on_mic_sensitivity_slider))
 
-        btn_vol_up = QPushButton("+")
-        btn_vol_up.setFixedSize(36, 36)
-        btn_vol_up.setStyleSheet("font-size: 18px; font-weight: bold;")
-        btn_vol_up.clicked.connect(self._on_settings_vol_up)
-        vg_layout.addWidget(btn_vol_up)
-
-        self._vol_label = QLabel("80%")
-        self._vol_label.setFixedWidth(42)
-        self._vol_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        vg_layout.addWidget(self._vol_label)
-
-        layout.addWidget(vol_group)
-
-        # ── Ring volume group ─────────────────────────────────────────────────
-        ring_group = QGroupBox("Ring Volume")
-        rg_layout = QHBoxLayout(ring_group)
-        rg_layout.setSpacing(8)
-
-        btn_ring_down = QPushButton("−")
-        btn_ring_down.setFixedSize(36, 36)
-        btn_ring_down.setStyleSheet("font-size: 18px; font-weight: bold;")
-        btn_ring_down.clicked.connect(lambda: self._on_ring_volume_button(-5))
-        rg_layout.addWidget(btn_ring_down)
-
-        self._ring_vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self._ring_vol_slider.setRange(0, 100)
-        self._ring_vol_slider.setValue(80)
-        self._ring_vol_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._ring_vol_slider.setTickInterval(10)
-        self._ring_vol_slider.valueChanged.connect(self._on_ring_volume_slider)
-        rg_layout.addWidget(self._ring_vol_slider, 1)
-
-        btn_ring_up = QPushButton("+")
-        btn_ring_up.setFixedSize(36, 36)
-        btn_ring_up.setStyleSheet("font-size: 18px; font-weight: bold;")
-        btn_ring_up.clicked.connect(lambda: self._on_ring_volume_button(+5))
-        rg_layout.addWidget(btn_ring_up)
-
-        self._ring_vol_label = QLabel("80%")
-        self._ring_vol_label.setFixedWidth(42)
-        self._ring_vol_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        rg_layout.addWidget(self._ring_vol_label)
-
-        layout.addWidget(ring_group)
-
-        # ── Mic sensitivity group ─────────────────────────────────────────────
-        mic_group = QGroupBox("Microphone Sensitivity")
-        mg_layout = QHBoxLayout(mic_group)
-        mg_layout.setSpacing(8)
-
-        btn_mic_down = QPushButton("−")
-        btn_mic_down.setFixedSize(36, 36)
-        btn_mic_down.setStyleSheet("font-size: 18px; font-weight: bold;")
-        btn_mic_down.clicked.connect(lambda: self._on_mic_sensitivity_button(-5))
-        mg_layout.addWidget(btn_mic_down)
-
-        self._mic_sens_slider = QSlider(Qt.Orientation.Horizontal)
-        self._mic_sens_slider.setRange(0, 150)   # allow boost up to 150 %
-        self._mic_sens_slider.setValue(80)
-        self._mic_sens_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self._mic_sens_slider.setTickInterval(10)
-        self._mic_sens_slider.valueChanged.connect(self._on_mic_sensitivity_slider)
-        mg_layout.addWidget(self._mic_sens_slider, 1)
-
-        btn_mic_up = QPushButton("+")
-        btn_mic_up.setFixedSize(36, 36)
-        btn_mic_up.setStyleSheet("font-size: 18px; font-weight: bold;")
-        btn_mic_up.clicked.connect(lambda: self._on_mic_sensitivity_button(+5))
-        mg_layout.addWidget(btn_mic_up)
-
-        self._mic_sens_label = QLabel("80%")
-        self._mic_sens_label.setFixedWidth(42)
-        self._mic_sens_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        mg_layout.addWidget(self._mic_sens_label)
-
-        layout.addWidget(mic_group)
+        layout.addWidget(levels_group)
 
         # ── Theme group ───────────────────────────────────────────────────────
         theme_group = QGroupBox("Appearance")
@@ -1520,14 +1460,19 @@ class MainWindow(QMainWindow):
                 selection-background-color: {t.bg3};
             }}
             QSlider::groove:horizontal {{
-                background: {t.bg3}; height: 6px; border-radius: 3px;
+                background: {t.bg3}; height: 4px; border-radius: 2px;
             }}
             QSlider::sub-page:horizontal {{
-                background: {t.accent_green}; height: 6px; border-radius: 3px;
+                background: {t.accent_blue}; height: 4px; border-radius: 2px;
             }}
             QSlider::handle:horizontal {{
-                background: {t.fg}; width: 18px; height: 18px;
-                margin: -6px 0; border-radius: 9px;
+                background: white;
+                width: 16px; height: 16px;
+                margin: -6px 0; border-radius: 8px;
+                border: none;
+            }}
+            QSlider::handle:horizontal:hover {{
+                background: #e8eaed;
             }}
             QStatusBar {{ color: {t.statusbar_fg}; background: {t.bg}; }}
             /* ── Call banner ── */
