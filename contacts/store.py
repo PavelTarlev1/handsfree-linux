@@ -37,11 +37,14 @@ CREATE TABLE IF NOT EXISTS call_log (
     contact_id   INTEGER REFERENCES contacts(id),
     started_at   TEXT NOT NULL,
     duration_sec INTEGER NOT NULL DEFAULT 0,
-    source_uid   TEXT UNIQUE         -- set for phone-synced entries; prevents duplicates
+    source_uid   TEXT                -- set for phone-synced entries; prevents duplicates
 );
 
 CREATE INDEX IF NOT EXISTS idx_call_log_number
     ON call_log (number);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_call_log_source_uid
+    ON call_log (source_uid) WHERE source_uid IS NOT NULL;
 """
 
 
@@ -64,7 +67,11 @@ class ContactStore:
                 self._conn.execute("ALTER TABLE contacts ADD COLUMN photo_data BLOB")
             log_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(call_log)").fetchall()]
             if "source_uid" not in log_cols:
-                self._conn.execute("ALTER TABLE call_log ADD COLUMN source_uid TEXT UNIQUE")
+                self._conn.execute("ALTER TABLE call_log ADD COLUMN source_uid TEXT")
+                self._conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_call_log_source_uid "
+                    "ON call_log (source_uid) WHERE source_uid IS NOT NULL"
+                )
 
     # ── Contacts ──────────────────────────────────────────────────────────────
 
