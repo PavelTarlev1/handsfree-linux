@@ -287,6 +287,12 @@ class HandsFreeApp(QObject):
         self._window.on_connected(device_name)
         self._tray.show_notification("HandsFree", f"Connected to {device_name}")
         self._refresh_devices()
+        # If we skipped the sync because it ran recently, restore the synced
+        # count on the status bar so it doesn't stay blank after reconnect.
+        if not (self._cfg.pbap.sync_on_connect and self._should_sync()):
+            total = self._store.count()
+            if total > 0:
+                self._window.on_sync_done(0, total)
 
     @pyqtSlot(str)
     def _on_disconnected(self, device_path: str):
