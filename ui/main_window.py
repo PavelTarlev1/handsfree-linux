@@ -173,6 +173,8 @@ class MainWindow(QMainWindow):
         self._call_banner_timer.setText(text)
         self._incall_timer_lbl.setText(text)
         self._call_overlay.update_timer(text)
+        if hasattr(self, "_dev_timer_lbl"):
+            self._dev_timer_lbl.setText(text)
 
     def _build_device_group(self) -> QGroupBox:
         """Device connection controls — lives in the Settings tab."""
@@ -913,10 +915,132 @@ class MainWindow(QMainWindow):
         self.theme_changed.emit(name)
 
     def _on_dev_mode_toggled(self, enabled: bool):
-        import logging
-        level = logging.DEBUG if enabled else logging.INFO
-        logging.getLogger().setLevel(level)
-        logger.debug("Developer mode %s", "enabled" if enabled else "disabled")
+        import logging as _logging
+        level = _logging.DEBUG if enabled else _logging.INFO
+        _logging.getLogger().setLevel(level)
+        if enabled:
+            # Add the Dev Logs tab if not already there
+            if not hasattr(self, "_devlogs_tab_index"):
+                tab = self._build_devlogs_tab()
+                self._devlogs_tab_index = self._tabs.addTab(tab, "Dev Logs")
+            else:
+                self._tabs.setTabVisible(self._devlogs_tab_index, True)
+            self._qt_log_handler.setLevel(_logging.DEBUG)
+            _logging.getLogger().addHandler(self._qt_log_handler)
+        else:
+            if hasattr(self, "_devlogs_tab_index"):
+                self._tabs.setTabVisible(self._devlogs_tab_index, False)
+            _logging.getLogger().removeHandler(self._qt_log_handler)
+
+    def _build_devlogs_tab(self) -> QWidget:
+        from PyQt6.QtWidgets import QListWidget, QListWidgetItem
+        from PyQt6.QtCore import pyqtSignal as _sig
+        import logging as _logging
+
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        # ── Call overlay preview ──────────────────────────────────────────────
+        preview_group = QGroupBox("Call Screen Preview")
+        pg_layout = QVBoxLayout(preview_group)
+        pg_layout.setContentsMargins(10, 10, 10, 10)
+
+        preview_container = QWidget()
+        preview_container.setStyleSheet(
+            "background: #1c1c1e; border-radius: 12px; border: 1px solid #5f6368;"
+        )
+        pc_layout = QVBoxLayout(preview_container)
+        pc_layout.setContentsMargins(14, 12, 14, 12)
+        pc_layout.setSpacing(10)
+
+        # Top row: avatar + name/status
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+        self._dev_avatar = QLabel("AB")
+        self._dev_avatar.setFixedSize(52, 52)
+        self._dev_avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._dev_avatar.setStyleSheet(
+            "border-radius: 26px; background: #3c4043; border: 2px solid #5f6368;"
+            "font-size: 20px; font-weight: bold; color: white;"
+        )
+        top_row.addWidget(self._dev_avatar)
+        info_col = QVBoxLayout()
+        info_col.setSpacing(2)
+        self._dev_name_lbl = QLabel("No active call")
+        self._dev_name_lbl.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #e8eaed; background: transparent;"
+        )
+        info_col.addWidget(self._dev_name_lbl)
+        self._dev_timer_lbl = QLabel("—")
+        self._dev_timer_lbl.setStyleSheet(
+            "font-size: 12px; color: #9aa0a6; background: transparent;"
+        )
+        info_col.addWidget(self._dev_timer_lbl)
+        top_row.addLayout(info_col, 1)
+        pc_layout.addLayout(top_row)
+
+        # Button row (purely visual mock — not wired)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+        mute_preview = QPushButton("Mute")
+        mute_preview.setFixedHeight(36)
+        mute_preview.setEnabled(False)
+        mute_preview.setStyleSheet(
+            "QPushButton{background:#2d2d2f;color:#e8eaed;border-radius:18px;"
+            "font-size:13px;border:1px solid #5f6368;}"
+        )
+        btn_row.addWidget(mute_preview)
+        end_preview = QPushButton("End Call")
+        end_preview.setFixedHeight(36)
+        end_preview.setEnabled(False)
+        end_preview.setStyleSheet(
+            "QPushButton{background:#ea4335;color:white;border-radius:18px;"
+            "font-size:13px;font-weight:bold;}"
+        )
+        btn_row.addWidget(end_preview)
+        pc_layout.addLayout(btn_row)
+
+        pg_layout.addWidget(preview_container)
+        layout.addWidget(preview_group)
+
+        # ── Log list ──────────────────────────────────────────────────────────
+        log_group = QGroupBox("Logs")
+        lg_layout = QVBoxLayout(log_group)
+        lg_layout.setContentsMargins(6, 6, 6, 6)
+
+        self._dev_log_list = QListWidget()
+        self._dev_log_list.setFrameShape(QListWidget.Shape.NoFrame)
+        self._dev_log_list.setStyleSheet("""
+            QListWidget { border: none; font-family: monospace; font-size: 11px; }
+            QListWidget::item { padding: 1px 4px; border: none; }
+        """)
+        lg_layout.addWidget(self._dev_log_list)
+
+        btn_clear = QPushButton("Clear")
+        btn_clear.setFixedWidth(70)
+        btn_clear.clicked.connect(self._dev_log_list.clear)
+        lg_layout.addWidget(btn_clear, alignment=Qt.AlignmentFlag.AlignRight)
+
+        layout.addWidget(log_group, 1)  # stretch — log list takes remaining space
+
+        # ── Qt log handler ────────────────────────────────────────────────────
+        self._qt_log_handler = _QtLogHandler(self._dev_log_list)
+        self._qt_log_handler.setFormatter(
+            _logging.Formatter("%(levelname)s  %(name)s — %(message)s")
+        )
+
+        return w
+
+    def _update_dev_preview(self, name: str, timer: str, avatar_text: str = ""):
+        """Called by on_call_active / on_call_ended to keep the preview in sync."""
+        if not hasattr(self, "_dev_name_lbl"):
+            return
+        self._dev_name_lbl.setText(name)
+        self._dev_timer_lbl.setText(timer)
+        if avatar_text:
+            self._dev_avatar.setText(avatar_text)
 
     # ── Audio tests ───────────────────────────────────────────────────────────
 
@@ -1182,6 +1306,7 @@ class MainWindow(QMainWindow):
                 break
         self._statusbar.showMessage(f"Calling {display}…")
         self._call_overlay.show_calling(display, number, photo)
+        self._update_dev_preview(display, "Calling…", display[:2].upper() if display else "?")
 
     def on_call_active(self, number: str):
         display, photo = self._set_incall_contact(number)
@@ -1206,6 +1331,7 @@ class MainWindow(QMainWindow):
                 break
         self._statusbar.showMessage(f"Call active: {display}")
         self._call_overlay.show_active(display, number, photo)
+        self._update_dev_preview(display, "0:00", display[:2].upper() if display else "?")
 
     @pyqtSlot()
     def on_call_ended(self):
@@ -1214,6 +1340,7 @@ class MainWindow(QMainWindow):
         self._dial_stack.setCurrentIndex(0)
         self._statusbar.showMessage("Call ended")
         self.refresh_call_log()
+        self._update_dev_preview("No active call", "—", "")
         # Show red "Call Ended" overlay then auto-hide it
         self._call_overlay.show_ended()
         # Hide main window if it was opened automatically for this call
@@ -1520,6 +1647,42 @@ class MainWindow(QMainWindow):
             QScrollBar::add-page:horizontal,
             QScrollBar::sub-page:horizontal {{ background: transparent; }}
         """)
+
+
+# ── Qt logging handler (feeds Dev Logs tab) ───────────────────────────────────
+
+import logging as _logging_mod
+from PyQt6.QtCore import QObject, pyqtSignal as _pyqtSignal
+
+
+class _QtLogHandler(_logging_mod.Handler, QObject):
+    """Thread-safe logging handler that appends records to a QListWidget."""
+
+    _record_ready = _pyqtSignal(str, int)  # formatted message, levelno
+
+    def __init__(self, list_widget):
+        _logging_mod.Handler.__init__(self)
+        QObject.__init__(self)
+        self._list = list_widget
+        self._record_ready.connect(self._append)
+
+    def emit(self, record: _logging_mod.LogRecord):
+        try:
+            msg = self.format(record)
+            self._record_ready.emit(msg, record.levelno)
+        except Exception:
+            self.handleError(record)
+
+    def _append(self, msg: str, levelno: int):
+        from PyQt6.QtWidgets import QListWidgetItem
+        from PyQt6.QtGui import QColor
+        item = QListWidgetItem(msg)
+        if levelno >= _logging_mod.ERROR:
+            item.setForeground(QColor("#ea4335"))
+        elif levelno >= _logging_mod.WARNING:
+            item.setForeground(QColor("#f0a500"))
+        self._list.addItem(item)
+        self._list.scrollToBottom()
 
 
 # ── Level dial widget ─────────────────────────────────────────────────────────
