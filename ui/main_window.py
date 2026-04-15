@@ -219,22 +219,26 @@ class MainWindow(QMainWindow):
     def _build_dialpad_page(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(24, 20, 24, 16)
+        layout.setSpacing(16)
 
         input_row = QHBoxLayout()
+        input_row.setSpacing(0)
         self._dial_input = QLineEdit()
-        self._dial_input.setPlaceholderText("0899 123 456")
-        self._dial_input.setMinimumHeight(42)
+        self._dial_input.setPlaceholderText("Enter number…")
+        self._dial_input.setMinimumHeight(44)
+        self._dial_input.setObjectName("dialInput")
         self._dial_input.setStyleSheet(
-            "font-size: 20px; letter-spacing: 2px; padding: 4px 10px;"
+            "font-size: 22px; letter-spacing: 3px; padding: 4px 12px;"
+            "border: none; border-bottom: 1px solid palette(mid);"
+            "background: transparent;"
         )
         self._dial_input.returnPressed.connect(self._on_dial)
         input_row.addWidget(self._dial_input)
 
         btn_del = QPushButton("⌫")
         btn_del.setObjectName("dialDelBtn")
-        btn_del.setFixedSize(44, 42)
+        btn_del.setFixedSize(44, 44)
         btn_del.clicked.connect(self._on_del_digit)
         input_row.addWidget(btn_del)
         layout.addLayout(input_row)
@@ -242,23 +246,23 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QGridLayout
         numpad = QWidget()
         pad = QGridLayout(numpad)
-        pad.setSpacing(6)
-        pad.setContentsMargins(0, 4, 0, 4)
+        pad.setSpacing(10)
+        pad.setContentsMargins(0, 8, 0, 8)
 
         KEYS = [
-            ("1", ""),   ("2", "ABC"),  ("3", "DEF"),
-            ("4", "GHI"),("5", "JKL"),  ("6", "MNO"),
-            ("7", "PQRS"),("8", "TUV"), ("9", "WXYZ"),
-            ("*", ""),   ("0", "+"),    ("#", ""),
+            ("1", ""),    ("2", "ABC"),  ("3", "DEF"),
+            ("4", "GHI"), ("5", "JKL"),  ("6", "MNO"),
+            ("7", "PQRS"),("8", "TUV"),  ("9", "WXYZ"),
+            ("*", ""),    ("0", "+"),    ("#", ""),
         ]
         for i, (digit, sub) in enumerate(KEYS):
             row, col = divmod(i, 3)
             btn = QPushButton()
             btn.setObjectName("dialBtn")
-            btn.setFixedSize(80, 52)
+            btn.setFixedSize(72, 72)
             btn_layout = QVBoxLayout(btn)
-            btn_layout.setContentsMargins(0, 4, 0, 4)
-            btn_layout.setSpacing(0)
+            btn_layout.setContentsMargins(0, 6, 0, 6)
+            btn_layout.setSpacing(1)
             lbl_main = QLabel(digit)
             lbl_main.setObjectName("dialBtnLabel")
             lbl_main.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -273,9 +277,9 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(numpad, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        self._btn_call = QPushButton("  Call")
+        self._btn_call = QPushButton("Call")
         self._btn_call.setObjectName("callBtn")
-        self._btn_call.setFixedHeight(48)
+        self._btn_call.setFixedHeight(52)
         self._btn_call.clicked.connect(self._on_dial)
         layout.addWidget(self._btn_call)
         layout.addStretch()
@@ -1048,10 +1052,18 @@ class MainWindow(QMainWindow):
     # ── Public update methods (call from app.py via Qt signals) ───────────────
 
     @pyqtSlot(str)
+    def on_connecting(self, name: str):
+        self._device_combo.setVisible(False)
+        self._btn_connect.setVisible(False)
+        self._status_label.setText(f"Connecting to {name}…")
+        # dot stays ⚠ amber
+
+    @pyqtSlot(str)
     def on_connected(self, device_name: str):
         self._status_dot.setText("●")
         self._status_dot.setStyleSheet("color: #34a853; font-size: 14px;")
         self._status_label.setText(f"Connected: {device_name}")
+        self._device_combo.setVisible(False)
         self._btn_connect.setVisible(False)
         self._btn_disconnect.setVisible(True)
         self._btn_sync.setVisible(True)
@@ -1062,6 +1074,7 @@ class MainWindow(QMainWindow):
         self._status_dot.setText("⚠")
         self._status_dot.setStyleSheet("color: #f0a500; font-size: 14px;")
         self._status_label.setText("Not connected")
+        self._device_combo.setVisible(True)
         self._btn_connect.setVisible(True)
         self._btn_disconnect.setVisible(False)
         self._btn_sync.setVisible(False)
@@ -1373,26 +1386,33 @@ class MainWindow(QMainWindow):
             }}
             /* ── Dial pad ── */
             #dialBtn {{
-                border: 1px solid {t.border}; border-radius: 6px;
-                background: {t.bg2};
+                border: none;
+                border-radius: 36px;
+                background: rgba(127,127,127,0.08);
             }}
-            #dialBtn:hover   {{ background: {t.bg3}; }}
-            #dialBtn:pressed {{ background: {t.btn_hover}; }}
+            #dialBtn:hover   {{ background: rgba(127,127,127,0.16); }}
+            #dialBtn:pressed {{ background: rgba(127,127,127,0.28); }}
             #dialBtnLabel {{
-                font-size: 20px; font-weight: bold;
+                font-size: 22px; font-weight: 300;
                 color: {t.fg}; background: transparent;
             }}
             #dialBtnSub {{
-                font-size: 9px; color: {t.fg_dim}; background: transparent;
+                font-size: 8px; color: {t.fg_dim}; background: transparent;
+                letter-spacing: 1px;
             }}
             #dialDelBtn {{
-                font-size: 18px; border: none; background: transparent; color: {t.fg_dim};
+                font-size: 18px; border: none;
+                background: transparent; color: {t.fg_dim};
+                border-radius: 22px;
             }}
+            #dialDelBtn:hover {{ background: rgba(127,127,127,0.12); }}
             #callBtn {{
                 background: {t.accent_green}; color: white;
-                border-radius: 24px; font-size: 16px; font-weight: bold;
+                border-radius: 26px; font-size: 17px; font-weight: 500;
+                border: none;
             }}
-            #callBtn:hover   {{ background: {t.accent_green}cc; }}
+            #callBtn:hover   {{ background: {t.accent_green}dd; }}
+            #callBtn:pressed {{ background: {t.accent_green}aa; }}
             /* ── In-call page ── */
             #incallPage {{ background: {t.bg}; }}
             #incallAvatar {{
