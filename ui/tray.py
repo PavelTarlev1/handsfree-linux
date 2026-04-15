@@ -7,34 +7,39 @@ import logging
 from typing import Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap, QTransform
 from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
 logger = logging.getLogger(__name__)
 
 
-def _make_headset_icon(color: str, size: int = 22) -> QIcon:
+def _make_phone_icon(color: str, size: int = 22) -> QIcon:
+    """Render a phone handset by drawing the ☎ glyph then tinting it."""
+    from PyQt6.QtCore import QRectF, Qt as _Qt
+    from PyQt6.QtGui import QFont
+
+    # Step 1: draw the glyph in white on transparent
     pix = QPixmap(size, size)
     pix.fill(QColor(0, 0, 0, 0))
-
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    c = QColor(color)
-
-    from PyQt6.QtCore import QRect
-    from PyQt6.QtGui import QPen
-    pen = QPen(c, max(1, size // 8))
-    p.setPen(pen)
-    p.setBrush(QColor(0, 0, 0, 0))
-    p.drawArc(QRect(size // 6, size // 6, size * 2 // 3, size * 2 // 3), 0, 180 * 16)
-
-    p.setBrush(c)
-    p.setPen(QColor(0, 0, 0, 0))
-    p.drawEllipse(1, size * 5 // 10, size // 5, size // 4)
-    p.drawEllipse(size - 1 - size // 5, size * 5 // 10, size // 5, size // 4)
-
+    p.setPen(QColor("white"))
+    font = QFont()
+    font.setPixelSize(int(size * 0.85))
+    p.setFont(font)
+    p.drawText(QRectF(0, 0, size, size), _Qt.AlignmentFlag.AlignCenter, "☎")
     p.end()
-    return QIcon(pix)
+
+    # Step 2: use the white glyph as a mask — fill with desired color
+    colored = QPixmap(size, size)
+    colored.fill(QColor(0, 0, 0, 0))
+    p2 = QPainter(colored)
+    p2.drawPixmap(0, 0, pix)
+    p2.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    p2.fillRect(0, 0, size, size, QColor(color))
+    p2.end()
+
+    return QIcon(colored)
 
 
 _ICON_INACTIVE = None
@@ -45,9 +50,9 @@ _ICON_CALL     = None
 def _get_icons():
     global _ICON_INACTIVE, _ICON_ACTIVE, _ICON_CALL
     if _ICON_INACTIVE is None:
-        _ICON_INACTIVE = _make_headset_icon("#888888")
-        _ICON_ACTIVE   = _make_headset_icon("#34a853")
-        _ICON_CALL     = _make_headset_icon("#ea4335")
+        _ICON_INACTIVE = _make_phone_icon("#888888")
+        _ICON_ACTIVE   = _make_phone_icon("#34a853")
+        _ICON_CALL     = _make_phone_icon("#ea4335")
     return _ICON_INACTIVE, _ICON_ACTIVE, _ICON_CALL
 
 
