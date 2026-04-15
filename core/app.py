@@ -483,8 +483,9 @@ class HandsFreeApp(QObject):
     def _on_sync_done(self, count: int):
         self._contacts_refreshed = True
         self._window._contacts_widget.refresh()
+        self._window.refresh_call_log()
         self._tray.show_notification(
-            "Contacts synced",
+            "Sync complete",
             f"{count} contact{'s' if count != 1 else ''} updated from phone",
         )
 
@@ -692,11 +693,25 @@ class HandsFreeApp(QObject):
             try:
                 if not client.connect(address):
                     return
+
+                # ── Contacts ──────────────────────────────────────────────
                 contacts = client.pull_all_contacts()
                 count = 0
                 for c in contacts:
                     self._store.upsert_contact(c)
                     count += 1
+                logger.info("PBAP: synced %d contacts", count)
+
+                # ── Call history ───────────────────────────────────────────
+                call_entries = client.pull_call_logs()
+                new_calls = 0
+                for entry in call_entries:
+                    if self._store.upsert_call_log(entry):
+                        new_calls += 1
+                if new_calls:
+                    logger.info("PBAP: imported %d new call log entries from phone", new_calls)
+                    self._bridge.sig_sync_done.emit(count)   # refresh UI
+
                 self._last_sync_time = time.monotonic()
                 self._bridge.sig_sync_done.emit(count)
             finally:

@@ -13,6 +13,7 @@ import os
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -200,6 +201,159 @@ class PBAPClient:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+
+    def pull_call_logs(self) -> list["CallLog"]:
+        """
+        Pull call history from the phone's call history phonebooks:
+          ich = incoming call history
+          och = outgoing call history
+          mch = missed call history
+
+        Returns a list of CallLog objects ready for upsert_call_log().
+        """
+        from contacts.models import CallLog
+
+        if not self._pbap_iface:
+            logger.error("Not connected to PBAP")
+            return []
+
+        results: list[CallLog] = []
+        phonebooks = [
+            ("ich", "incoming"),
+            ("och", "outgoing"),
+            ("mch", "missed"),
+        ]
+
+        for pb_name, direction in phonebooks:
+            entries = self._pull_history_phonebook(pb_name, direction)
+            logger.info("PBAP: pulled %d %s call log entries", len(entries), pb_name)
+            results.extend(entries)
+
+        return results
+
+    def _pull_history_phonebook(self, pb_name: str, direction: str) -> list["CallLog"]:
+        """Pull one call-history phonebook (ich/och/mch) and parse it."""
+        from contacts.models import CallLog
+        import dbus
+
+        tmp_path = None
+        try:
+            # Switch to the history phonebook
+            for repo in ("telecom", "int"):
+                try:
+                    self._pbap_iface.Select(repo, pb_name)
+                    break
+                except Exception:
+                    continue
+            else:
+                logger.debug("PBAP: could not select %s — skipping", pb_name)
+                return []
+
+            with tempfile.NamedTemporaryFile(suffix=".vcf", delete=False, mode="wb") as f:
+                tmp_path = f.name
+
+            transfer_path, _ = self._pbap_iface.PullAll(
+                tmp_path,
+                {"Format": dbus.String("vcard30")},
+            )
+            self._wait_for_transfer(str(transfer_path), tmp_path)
+            return self._parse_call_history_vcf(tmp_path, direction)
+
+        except Exception as e:
+            logger.debug("PBAP pull %s failed: %s", pb_name, e)
+            return []
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            # Switch back to the main phonebook
+            try:
+                for repo in ("telecom", "int"):
+                    try:
+                        self._pbap_iface.Select(repo, "pb")
+                        break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+    @staticmethod
+    def _parse_call_history_vcf(path: str, default_direction: str) -> list["CallLog"]:
+        """Parse a call-history vCard file into CallLog objects."""
+        from contacts.models import CallLog
+        try:
+            import vobject
+        except ImportError:
+            logger.error("vobject not installed")
+            return []
+
+        raw = Path(path).read_text(encoding="utf-8", errors="replace")
+        entries: list[CallLog] = []
+
+        for i, vcard in enumerate(vobject.readComponents(raw)):
+            try:
+                # Phone number
+                tel_list = vcard.contents.get("tel", [])
+                number = str(tel_list[0].value).strip() if tel_list else ""
+
+                # Timestamp — stored in X-IRMC-CALL-DATETIME property
+                started_at = ""
+                duration_sec = 0
+                direction = default_direction
+
+                for prop_name, prop_list in vcard.contents.items():
+                    upper = prop_name.upper()
+                    if "CALL-DATETIME" in upper:
+                        prop = prop_list[0]
+                        dt_str = str(prop.value).strip()
+                        # Parse YYYYMMDDTHHMMSS or YYYYMMDDTHHMMSSZ
+                        try:
+                            dt_str_clean = dt_str.replace("Z", "").replace("-", "").replace(":", "")
+                            dt = datetime.strptime(dt_str_clean[:15], "%Y%m%dT%H%M%S")
+                            started_at = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        except Exception:
+                            started_at = dt_str
+
+                        # Some phones encode direction in the TYPE param
+                        params = getattr(prop, "params", {})
+                        type_vals = [v.upper() for v in params.get("TYPE", [])]
+                        if "MISSED" in type_vals:
+                            direction = "missed"
+                        elif "RECEIVED" in type_vals:
+                            direction = "incoming"
+                        elif "DIALED" in type_vals:
+                            direction = "outgoing"
+
+                    if "DURATION" in upper:
+                        try:
+                            # Duration is ISO 8601 (PTxxS or PTxMxxS)
+                            import re as _re
+                            d_str = str(prop_list[0].value)
+                            mins = int(m.group(1)) if (m := _re.search(r"(\d+)M", d_str)) else 0
+                            secs = int(m.group(1)) if (m := _re.search(r"(\d+)S", d_str)) else 0
+                            duration_sec = mins * 60 + secs
+                        except Exception:
+                            pass
+
+                if not started_at:
+                    continue   # Can't deduplicate without a timestamp — skip
+
+                # Stable UID: direction + number + timestamp
+                source_uid = f"pbap:{direction}:{number}:{started_at}"
+
+                entries.append(CallLog(
+                    direction=direction,
+                    number=number,
+                    started_at=started_at,
+                    duration_sec=duration_sec,
+                    source_uid=source_uid,
+                ))
+            except Exception as e:
+                logger.debug("Call history vCard parse error: %s", e)
+
+        return entries
 
     def _wait_for_transfer(
         self, transfer_path: str, dest_file: str, timeout: float = 60.0

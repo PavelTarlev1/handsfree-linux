@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS call_log (
     number       TEXT NOT NULL,
     contact_id   INTEGER REFERENCES contacts(id),
     started_at   TEXT NOT NULL,
-    duration_sec INTEGER NOT NULL DEFAULT 0
+    duration_sec INTEGER NOT NULL DEFAULT 0,
+    source_uid   TEXT UNIQUE         -- set for phone-synced entries; prevents duplicates
 );
 
 CREATE INDEX IF NOT EXISTS idx_call_log_number
@@ -57,10 +58,13 @@ class ContactStore:
     def _init_schema(self):
         with self._lock, self._conn:
             self._conn.executescript(SCHEMA)
-            # Migrate: add photo_data column if it doesn't exist yet
+            # Migrations
             cols = [r[1] for r in self._conn.execute("PRAGMA table_info(contacts)").fetchall()]
             if "photo_data" not in cols:
                 self._conn.execute("ALTER TABLE contacts ADD COLUMN photo_data BLOB")
+            log_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(call_log)").fetchall()]
+            if "source_uid" not in log_cols:
+                self._conn.execute("ALTER TABLE call_log ADD COLUMN source_uid TEXT UNIQUE")
 
     # ── Contacts ──────────────────────────────────────────────────────────────
 
@@ -248,6 +252,23 @@ class ContactStore:
                 (contact_id, call_id),
             )
 
+    def upsert_call_log(self, entry: CallLog) -> bool:
+        """Insert a phone-synced call log entry. Skips duplicates by source_uid.
+        Returns True if a new row was inserted."""
+        if not entry.source_uid:
+            return False
+        contact = self.lookup_by_number(entry.number) if entry.number else None
+        contact_id = contact.id if contact else entry.contact_id
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """INSERT OR IGNORE INTO call_log
+                   (direction, number, contact_id, started_at, duration_sec, source_uid)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (entry.direction, entry.number, contact_id,
+                 entry.started_at, entry.duration_sec, entry.source_uid),
+            )
+            return cur.rowcount > 0
+
     def get_call_log_for_number(
         self, number: str, limit: int = 50, contact_id: int | None = None
     ) -> list[CallLog]:
@@ -276,6 +297,7 @@ class ContactStore:
                 id=r["id"], direction=r["direction"], number=r["number"],
                 contact_id=r["contact_id"], started_at=r["started_at"],
                 duration_sec=r["duration_sec"],
+                source_uid=r["source_uid"] if "source_uid" in r.keys() else None,
             )
             for r in rows
         ]

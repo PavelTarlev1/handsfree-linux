@@ -41,6 +41,7 @@ class CallLog:
     contact_id: Optional[int] = None
     started_at: str = ""
     duration_sec: int = 0
+    source_uid: Optional[str] = None  # set for phone-synced entries
 
     @staticmethod
     def now_iso() -> str:
