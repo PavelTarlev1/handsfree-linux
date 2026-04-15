@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 
 from contacts.models import Contact
 from contacts.store import ContactStore
+from ui.contact_profile import ContactProfileDialog
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,10 @@ class ContactsWidget(QWidget):
 
     dial_requested = pyqtSignal(str)  # Emitted with phone number when user clicks Dial
 
-    def __init__(self, store: ContactStore, parent=None):
+    def __init__(self, store: ContactStore, dial_cb=None, parent=None):
         super().__init__(parent)
         self._store = store
+        self._dial_cb = dial_cb or self.dial_requested.emit
         self._contacts: list[Contact] = []
         self._build_ui()
         self.refresh()
@@ -108,7 +110,9 @@ class ContactsWidget(QWidget):
         contact: Contact = item.data(Qt.ItemDataRole.UserRole)
 
         menu = QMenu(self)
+        act_profile = menu.addAction(f"Open profile")
         act_dial = menu.addAction(f"Call {contact.effective_name}")
+        menu.addSeparator()
         act_rename = menu.addAction("Rename…")
         if contact.custom_name:
             act_clear = menu.addAction("Clear custom name")
@@ -118,7 +122,9 @@ class ContactsWidget(QWidget):
         act_delete = menu.addAction("Delete contact")
 
         action = menu.exec(self._list.mapToGlobal(pos))
-        if action == act_dial:
+        if action == act_profile:
+            self._open_profile(contact)
+        elif action == act_dial:
             self.dial_requested.emit(contact.phone_number)
         elif action == act_rename:
             self._rename_contact(contact)
@@ -130,7 +136,17 @@ class ContactsWidget(QWidget):
 
     def _on_double_click(self, item: QListWidgetItem):
         contact: Contact = item.data(Qt.ItemDataRole.UserRole)
-        self.dial_requested.emit(contact.phone_number)
+        self._open_profile(contact)
+
+    def _open_profile(self, contact: Contact):
+        dlg = ContactProfileDialog(
+            store=self._store,
+            dial_cb=self._dial_cb,
+            contact=contact,
+            parent=self,
+        )
+        dlg.exec()
+        self.refresh()   # name/photo may have changed
 
     # ── Actions ───────────────────────────────────────────────────────────────
 

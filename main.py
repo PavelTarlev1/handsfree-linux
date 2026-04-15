@@ -6,8 +6,7 @@ Makes your computer act like a car hands-free kit:
   - Phone connects via Bluetooth HFP
   - Incoming/outgoing call handling with pop-up notifications
   - Contact sync from phone (PBAP)
-  - VoIP app detection (Teams, Zoom, Meet, Slack, Discord…)
-  - System tray icon
+  - VoIP app detection (Teams, Zoom, Meet, Slack, Discord…)python3 main.py --debug
   - Local contact storage with rename support
 
 Usage:
@@ -15,7 +14,7 @@ Usage:
 
 Requirements (Linux):
     sudo apt install bluez bluez-obexd python3-dbus python3-gi
-    pip install PyQt6 vobject psutil
+    pip install PyQt6 vobject psutil 
 
 For WirePlumber HFP conflict, see: docs/wireplumber-setup.md
 """

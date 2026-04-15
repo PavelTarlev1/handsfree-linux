@@ -11,7 +11,7 @@ from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QPushButton, QSlider, QSplitter, QStackedWidget,
+    QMainWindow, QMenu, QPushButton, QSlider, QSplitter, QStackedWidget,
     QStatusBar, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -31,6 +31,7 @@ class MainWindow(QMainWindow):
     connect_requested    = pyqtSignal(str)   # device_path
     disconnect_requested = pyqtSignal()
     hangup_requested     = pyqtSignal()
+    mute_requested       = pyqtSignal(bool)  # True = mute on
 
     # Settings signals
     audio_output_changed = pyqtSignal(str)   # pactl sink name
@@ -77,7 +78,7 @@ class MainWindow(QMainWindow):
 
         # ── Contacts tab ──
         from ui.contacts_widget import ContactsWidget
-        self._contacts_widget = ContactsWidget(self._store)
+        self._contacts_widget = ContactsWidget(self._store, dial_cb=self.dial_requested.emit)
         self._contacts_widget.dial_requested.connect(self.dial_requested)
         self._tabs.addTab(self._contacts_widget, "Contacts")
 
@@ -95,6 +96,12 @@ class MainWindow(QMainWindow):
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
         self._statusbar.showMessage("Ready")
+
+        # Floating call overlay (always-on-top, visible even when window minimised)
+        from ui.call_overlay import CallOverlay
+        self._call_overlay = CallOverlay()
+        self._call_overlay.hangup_requested.connect(self.hangup_requested)
+        self._call_overlay.mute_toggled.connect(self.mute_requested)
 
     def _build_call_banner(self) -> QWidget:
         """Red banner shown during an active call — number, timer, End Call button."""
@@ -164,6 +171,7 @@ class MainWindow(QMainWindow):
         text = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
         self._call_banner_timer.setText(text)
         self._incall_timer_lbl.setText(text)
+        self._call_overlay.update_timer(text)
 
     def _build_status_group(self) -> QGroupBox:
         group = QGroupBox("Connection")
@@ -316,21 +324,31 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         layout.addStretch(1)
 
-        # Phone icon
-        icon_lbl = QLabel("📞")
-        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon_lbl.setStyleSheet("font-size: 48px; background: transparent;")
-        layout.addWidget(icon_lbl)
+        # Avatar
+        self._incall_avatar = QLabel()
+        self._incall_avatar.setFixedSize(88, 88)
+        self._incall_avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._incall_avatar.setStyleSheet(
+            "border-radius: 44px; background: #3c4043; border: 2px solid #5f6368;"
+            "font-size: 32px; font-weight: bold; color: white;"
+        )
+        self._incall_avatar.setText("?")
+        layout.addWidget(self._incall_avatar, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        layout.addSpacing(12)
+        layout.addSpacing(14)
 
-        # Caller number
+        # Contact name (large) + number (small, below)
         self._incall_number_lbl = QLabel("")
         self._incall_number_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._incall_number_lbl.setStyleSheet(
             "font-size: 22px; font-weight: bold; color: #e8eaed; background: transparent;"
         )
         layout.addWidget(self._incall_number_lbl)
+
+        self._incall_number_sub = QLabel("")   # raw number shown when name is known
+        self._incall_number_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._incall_number_sub.setStyleSheet("font-size: 13px; color: #9aa0a6; background: transparent;")
+        layout.addWidget(self._incall_number_sub)
 
         layout.addSpacing(6)
 
@@ -393,9 +411,59 @@ class MainWindow(QMainWindow):
         vol_row.addWidget(self._incall_vol_lbl)
 
         layout.addLayout(vol_row)
-        layout.addSpacing(32)
+        layout.addSpacing(20)
 
-        # End Call button
+        # ── Audio device pickers ──────────────────────────────────────────────
+        dev_style = (
+            "QLabel{color:#9aa0a6;font-size:11px;background:transparent;}"
+            "QComboBox{background:#2d2d2f;color:#e8eaed;border:1px solid #5f6368;"
+            "border-radius:6px;padding:4px 8px;font-size:12px;}"
+            "QComboBox::drop-down{border:none;}"
+            "QComboBox QAbstractItemView{background:#2d2d2f;color:#e8eaed;}"
+        )
+        dev_widget = QWidget()
+        dev_widget.setStyleSheet(dev_style)
+        dev_layout = QVBoxLayout(dev_widget)
+        dev_layout.setContentsMargins(0, 0, 0, 0)
+        dev_layout.setSpacing(6)
+
+        out_row = QHBoxLayout()
+        out_lbl = QLabel("Speaker:")
+        out_lbl.setFixedWidth(72)
+        out_row.addWidget(out_lbl)
+        self._incall_output_combo = QComboBox()
+        self._incall_output_combo.currentIndexChanged.connect(self._on_incall_output_changed)
+        out_row.addWidget(self._incall_output_combo, 1)
+        dev_layout.addLayout(out_row)
+
+        in_row = QHBoxLayout()
+        in_lbl = QLabel("Microphone:")
+        in_lbl.setFixedWidth(72)
+        in_row.addWidget(in_lbl)
+        self._incall_input_combo = QComboBox()
+        self._incall_input_combo.currentIndexChanged.connect(self._on_incall_input_changed)
+        in_row.addWidget(self._incall_input_combo, 1)
+        dev_layout.addLayout(in_row)
+
+        layout.addWidget(dev_widget)
+        layout.addSpacing(20)
+
+        # ── Mute + End Call row ───────────────────────────────────────────────
+        action_row = QHBoxLayout()
+        action_row.setSpacing(14)
+
+        self._incall_btn_mute = QPushButton("Mute")
+        self._incall_btn_mute.setFixedHeight(56)
+        self._incall_btn_mute.setCheckable(True)
+        self._incall_btn_mute.setStyleSheet(
+            "QPushButton{background:#2d2d2f;color:#e8eaed;"
+            "border-radius:28px;font-size:16px;border:1px solid #5f6368;}"
+            "QPushButton:hover{background:#3c4043;}"
+            "QPushButton:checked{background:#ea4335;color:white;border:none;}"
+        )
+        self._incall_btn_mute.toggled.connect(self._on_incall_mute_toggled)
+        action_row.addWidget(self._incall_btn_mute)
+
         btn_end = QPushButton("  End Call")
         btn_end.setFixedHeight(56)
         btn_end.setStyleSheet("""
@@ -407,7 +475,9 @@ class MainWindow(QMainWindow):
             QPushButton:pressed{ background: #a02820; }
         """)
         btn_end.clicked.connect(self.hangup_requested)
-        layout.addWidget(btn_end)
+        action_row.addWidget(btn_end)
+
+        layout.addLayout(action_row)
 
         layout.addStretch(1)
         return w
@@ -428,6 +498,40 @@ class MainWindow(QMainWindow):
             self._vol_slider.blockSignals(False)
             self._vol_label.setText(f"{value}%")
 
+    def _on_incall_mute_toggled(self, checked: bool):
+        self._incall_btn_mute.setText("Unmute" if checked else "Mute")
+        self.mute_requested.emit(checked)
+        # Keep overlay in sync
+        if hasattr(self, "_call_overlay"):
+            self._call_overlay._btn_mute.blockSignals(True)
+            self._call_overlay._btn_mute.setChecked(checked)
+            self._call_overlay._btn_mute.setText("Unmute" if checked else "Mute")
+            self._call_overlay._btn_mute.blockSignals(False)
+
+    def _on_incall_output_changed(self, _index: int):
+        name = self._incall_output_combo.currentData() or ""
+        self.audio_output_changed.emit(name)
+        # Keep Settings tab combo in sync
+        if hasattr(self, "_audio_output_combo"):
+            self._audio_output_combo.blockSignals(True)
+            for i in range(self._audio_output_combo.count()):
+                if self._audio_output_combo.itemData(i) == name:
+                    self._audio_output_combo.setCurrentIndex(i)
+                    break
+            self._audio_output_combo.blockSignals(False)
+
+    def _on_incall_input_changed(self, _index: int):
+        name = self._incall_input_combo.currentData() or ""
+        self.audio_input_changed.emit(name)
+        # Keep Settings tab combo in sync
+        if hasattr(self, "_audio_input_combo"):
+            self._audio_input_combo.blockSignals(True)
+            for i in range(self._audio_input_combo.count()):
+                if self._audio_input_combo.itemData(i) == name:
+                    self._audio_input_combo.setCurrentIndex(i)
+                    break
+            self._audio_input_combo.blockSignals(False)
+
     def _build_calllog_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -439,10 +543,12 @@ class MainWindow(QMainWindow):
             "QListWidget::item { padding: 6px 4px; border-bottom: 1px solid #2d2d2f; }"
         )
         self._calllog_list.itemDoubleClicked.connect(self._on_calllog_double_click)
+        self._calllog_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._calllog_list.customContextMenuRequested.connect(self._on_calllog_context_menu)
         layout.addWidget(self._calllog_list)
 
         btn_row = QHBoxLayout()
-        lbl = QLabel("Double-click to redial")
+        lbl = QLabel("Double-click to open profile · Right-click for options")
         lbl.setStyleSheet("color: #5f6368; font-size: 11px;")
         btn_row.addWidget(lbl)
         btn_row.addStretch()
@@ -453,9 +559,41 @@ class MainWindow(QMainWindow):
         return w
 
     def _on_calllog_double_click(self, item: QListWidgetItem):
-        number = item.data(Qt.ItemDataRole.UserRole)
-        if number:
+        self._calllog_open_profile(item)
+
+    def _on_calllog_context_menu(self, pos):
+        item = self._calllog_list.itemAt(pos)
+        if not item:
+            return
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        number = entry.number if entry else ""
+        if not number:
+            return
+
+        menu = QMenu(self)
+        act_profile = menu.addAction("Open profile")
+        act_call = menu.addAction(f"Call  {number}")
+        action = menu.exec(self._calllog_list.mapToGlobal(pos))
+        if action == act_profile:
+            self._calllog_open_profile(item)
+        elif action == act_call:
             self.dial_requested.emit(number)
+
+    def _calllog_open_profile(self, item: QListWidgetItem):
+        from ui.contact_profile import ContactProfileDialog
+        entry = item.data(Qt.ItemDataRole.UserRole)
+        if not entry:
+            return
+        number = entry.number
+        contact = self._store.lookup_by_number(number)
+        dlg = ContactProfileDialog(
+            store=self._store,
+            dial_cb=self.dial_requested.emit,
+            contact=contact,
+            number=number,
+            parent=self,
+        )
+        dlg.exec()
 
     def _on_tab_changed(self, index: int):
         tab_name = self._tabs.tabText(index)
@@ -558,7 +696,7 @@ class MainWindow(QMainWindow):
         btn_vol_down = QPushButton("−")
         btn_vol_down.setFixedSize(36, 36)
         btn_vol_down.setStyleSheet("font-size: 18px; font-weight: bold;")
-        btn_vol_down.clicked.connect(lambda: self._on_volume_button(-5))
+        btn_vol_down.clicked.connect(self._on_settings_vol_down)
         vg_layout.addWidget(btn_vol_down)
 
         self._vol_slider = QSlider(Qt.Orientation.Horizontal)
@@ -572,7 +710,7 @@ class MainWindow(QMainWindow):
         btn_vol_up = QPushButton("+")
         btn_vol_up.setFixedSize(36, 36)
         btn_vol_up.setStyleSheet("font-size: 18px; font-weight: bold;")
-        btn_vol_up.clicked.connect(lambda: self._on_volume_button(+5))
+        btn_vol_up.clicked.connect(self._on_settings_vol_up)
         vg_layout.addWidget(btn_vol_up)
 
         self._vol_label = QLabel("80%")
@@ -623,31 +761,44 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug("pactl sources: %s", e)
 
-        # Block signals while repopulating to avoid spurious saves
-        self._audio_output_combo.blockSignals(True)
-        self._audio_input_combo.blockSignals(True)
+        # All combos to update: Settings tab + in-call page
+        out_combos = [self._audio_output_combo]
+        in_combos  = [self._audio_input_combo]
+        if hasattr(self, "_incall_output_combo"):
+            out_combos.append(self._incall_output_combo)
+        if hasattr(self, "_incall_input_combo"):
+            in_combos.append(self._incall_input_combo)
 
         prev_out = self._audio_output_combo.currentData() or ""
         prev_in  = self._audio_input_combo.currentData()  or ""
 
-        self._audio_output_combo.clear()
-        for descr, name in sinks:
-            self._audio_output_combo.addItem(descr, userData=name)
+        for combo in out_combos + in_combos:
+            combo.blockSignals(True)
 
-        self._audio_input_combo.clear()
-        for descr, name in sources:
-            self._audio_input_combo.addItem(descr, userData=name)
+        for combo in out_combos:
+            combo.clear()
+            for descr, name in sinks:
+                combo.addItem(descr, userData=name)
 
-        # Restore previous selection
-        for combo, prev in ((self._audio_output_combo, prev_out),
-                            (self._audio_input_combo,  prev_in)):
+        for combo in in_combos:
+            combo.clear()
+            for descr, name in sources:
+                combo.addItem(descr, userData=name)
+
+        # Restore previous selection in all combos
+        for combo in out_combos:
             for i in range(combo.count()):
-                if combo.itemData(i) == prev:
+                if combo.itemData(i) == prev_out:
+                    combo.setCurrentIndex(i)
+                    break
+        for combo in in_combos:
+            for i in range(combo.count()):
+                if combo.itemData(i) == prev_in:
                     combo.setCurrentIndex(i)
                     break
 
-        self._audio_output_combo.blockSignals(False)
-        self._audio_input_combo.blockSignals(False)
+        for combo in out_combos + in_combos:
+            combo.blockSignals(False)
 
     def set_audio_selection(self, output_name: str, input_name: str, volume: int):
         """Called by HandsFreeApp to restore saved settings into the UI."""
@@ -685,6 +836,12 @@ class MainWindow(QMainWindow):
     def _on_volume_button(self, delta: int):
         new_val = max(0, min(100, self._vol_slider.value() + delta))
         self._vol_slider.setValue(new_val)   # triggers _on_volume_slider
+
+    def _on_settings_vol_down(self, checked: bool = False):
+        self._on_volume_button(-5)
+
+    def _on_settings_vol_up(self, checked: bool = False):
+        self._on_volume_button(+5)
 
     # ── Audio tests ───────────────────────────────────────────────────────────
 
@@ -833,16 +990,80 @@ class MainWindow(QMainWindow):
         self._btn_sync.setVisible(False)
 
     @pyqtSlot(str)
+    # ── In-call contact helpers ───────────────────────────────────────────────
+
+    def _set_incall_contact(self, number: str) -> tuple[str, bytes | None]:
+        """Populate avatar/labels from store. Returns (display_name, photo_bytes)."""
+        from PyQt6.QtGui import QPixmap
+        contact = self._store.lookup_by_number(number) if number else None
+        name = contact.effective_name if contact else (number or "Unknown")
+        self._incall_number_lbl.setText(name)
+        if contact and name != number:
+            self._incall_number_sub.setText(number)
+            self._incall_number_sub.setVisible(True)
+        else:
+            self._incall_number_sub.setVisible(False)
+
+        photo_bytes = None
+        if contact:
+            if contact.photo_data:
+                photo_bytes = contact.photo_data
+            elif contact.raw_vcard:
+                from ui.contact_profile import _extract_vcard_photo
+                photo_bytes = _extract_vcard_photo(contact.raw_vcard)
+
+        _SZ = 88
+        if photo_bytes:
+            px = QPixmap()
+            if px.loadFromData(photo_bytes):
+                px = px.scaled(_SZ, _SZ,
+                               Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                               Qt.TransformationMode.SmoothTransformation)
+                self._incall_avatar.setPixmap(px.copy(0, 0, _SZ, _SZ))
+                self._incall_avatar.setStyleSheet(
+                    "border-radius: 44px; background: #3c4043; border: 2px solid #5f6368;"
+                )
+                return name, photo_bytes
+
+        words = name.split()
+        initials = (words[0][0] + words[-1][0]).upper() if len(words) >= 2 else name[:2].upper() or "?"
+        self._incall_avatar.setText(initials)
+        self._incall_avatar.setStyleSheet(
+            "border-radius: 44px; background: #3c4043; border: 2px solid #5f6368;"
+            "font-size: 28px; font-weight: bold; color: white;"
+        )
+        return name, photo_bytes
+
+    def on_dialling(self, number: str):
+        """Show in-call screen immediately when the user dials (before remote answers)."""
+        self._refresh_audio_devices()
+        self._incall_btn_mute.setChecked(False)
+        self._incall_btn_mute.setText("Mute")
+        display, photo = self._set_incall_contact(number)
+        self._incall_timer_lbl.setText("Calling…")
+        vol = self._vol_slider.value() if hasattr(self, "_vol_slider") else 80
+        self._incall_vol_slider.blockSignals(True)
+        self._incall_vol_slider.setValue(vol)
+        self._incall_vol_slider.blockSignals(False)
+        self._incall_vol_lbl.setText(f"{vol}%")
+        self._dial_stack.setCurrentIndex(1)
+        self._opened_for_call = not self.isVisible()
+        self.show()
+        self.raise_()
+        for i in range(self._tabs.count()):
+            if self._tabs.tabText(i) == "Dial":
+                self._tabs.setCurrentIndex(i)
+                break
+        self._statusbar.showMessage(f"Calling {display}…")
+        self._call_overlay.show_calling(display, number, photo)
+
     def on_call_active(self, number: str):
-        display = number if number else "Unknown"
-        # Top banner
+        display, photo = self._set_incall_contact(number)
         self._call_banner_number.setText(display)
         self._call_elapsed_sec = 0
         self._call_banner_timer.setText("0:00")
         self._call_banner.setVisible(True)
         self._call_timer.start()
-        # Dial tab → switch to in-call page
-        self._incall_number_lbl.setText(display)
         self._incall_timer_lbl.setText("0:00")
         vol = self._vol_slider.value() if hasattr(self, "_vol_slider") else 80
         self._incall_vol_slider.blockSignals(True)
@@ -850,12 +1071,15 @@ class MainWindow(QMainWindow):
         self._incall_vol_slider.blockSignals(False)
         self._incall_vol_lbl.setText(f"{vol}%")
         self._dial_stack.setCurrentIndex(1)
-        # Switch to Dial tab so in-call view is immediately visible
+        self._opened_for_call = not self.isVisible()
+        self.show()
+        self.raise_()
         for i in range(self._tabs.count()):
             if self._tabs.tabText(i) == "Dial":
                 self._tabs.setCurrentIndex(i)
                 break
         self._statusbar.showMessage(f"Call active: {display}")
+        self._call_overlay.show_active(display, number, photo)
 
     @pyqtSlot()
     def on_call_ended(self):
@@ -863,6 +1087,13 @@ class MainWindow(QMainWindow):
         self._call_banner.setVisible(False)
         self._dial_stack.setCurrentIndex(0)
         self._statusbar.showMessage("Call ended")
+        self.refresh_call_log()
+        # Show red "Call Ended" overlay then auto-hide it
+        self._call_overlay.show_ended()
+        # Hide main window if it was opened automatically for this call
+        if getattr(self, "_opened_for_call", False):
+            self._opened_for_call = False
+            self.hide()
 
     def set_devices(self, devices: list[dict]):
         self._devices = devices
@@ -905,7 +1136,7 @@ class MainWindow(QMainWindow):
 
             item = QListWidgetItem(f"{icon}  {name}    {ts}{dur}")
             item.setForeground(QColor(color))
-            item.setData(Qt.ItemDataRole.UserRole, entry.number)  # for redial
+            item.setData(Qt.ItemDataRole.UserRole, entry)   # full CallLog for profile/redial
             item.setToolTip(f"{entry.direction.capitalize()}  •  {entry.number}  •  {entry.started_at[:16]}")
             self._calllog_list.addItem(item)
 

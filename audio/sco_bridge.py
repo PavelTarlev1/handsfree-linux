@@ -37,6 +37,8 @@ _FORMAT   = "s16le"
 _CHANNELS = 1
 # Chunk = 30 ms of audio → smoother audio with fewer write() calls
 _CHUNK = int(_RATE * 2 * 0.030)   # 480 bytes = 240 samples = 30 ms
+# SCO SOCK_SEQPACKET MTU for CVSD HV3 packets
+_SCO_MTU = 48
 
 
 class SCOBridge:
@@ -183,7 +185,7 @@ class SCOBridge:
         play_cmd = [
             "pacat", "--playback", "--raw",
             f"--format={_FORMAT}", f"--rate={_RATE}", f"--channels={_CHANNELS}",
-            "--latency-msec=20",
+            "--latency-msec=40",
         ]
         if output_sink:
             play_cmd.append(f"--device={output_sink}")
@@ -192,7 +194,7 @@ class SCOBridge:
         rec_cmd = [
             "pacat", "--record", "--raw",
             f"--format={_FORMAT}", f"--rate={_RATE}", f"--channels={_CHANNELS}",
-            "--latency-msec=20",
+            "--latency-msec=40",
         ]
         if input_source:
             rec_cmd.append(f"--device={input_source}")
@@ -221,29 +223,41 @@ class SCOBridge:
 
     def _rx_loop(self):
         """SCO receive → pacat playback stdin (phone → speaker)."""
+        sock = self._sco_sock
+        proc = self._play_proc
+        # Accumulate SCO packets (48 bytes each) into 30 ms chunks before writing
+        buf = bytearray()
         try:
-            while self._running and self._sco_sock and self._play_proc:
-                data = self._sco_sock.recv(_CHUNK)
+            while self._running and sock and proc:
+                data = sock.recv(_SCO_MTU)
                 if not data:
                     break
-                try:
-                    self._play_proc.stdin.write(data)
-                    self._play_proc.stdin.flush()
-                except BrokenPipeError:
-                    break
+                buf += data
+                if len(buf) >= _CHUNK:
+                    try:
+                        proc.stdin.write(bytes(buf))
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        break
+                    buf.clear()
         except OSError:
             pass
         logger.debug("SCO-RX loop ended")
 
     def _tx_loop(self):
         """pacat record stdout → SCO send (mic → phone)."""
+        sock = self._sco_sock
+        proc = self._rec_proc
         try:
-            while self._running and self._sco_sock and self._rec_proc:
-                data = self._rec_proc.stdout.read(_CHUNK)
+            while self._running and sock and proc:
+                data = proc.stdout.read(_CHUNK)
                 if not data:
                     break
+                # SCO SOCK_SEQPACKET: each send() is one packet.
+                # CVSD HV3 MTU = 48 bytes — split into 48-byte frames.
                 try:
-                    self._sco_sock.sendall(data)
+                    for i in range(0, len(data), _SCO_MTU):
+                        sock.send(data[i:i + _SCO_MTU])
                 except OSError:
                     break
         except OSError:

@@ -4,7 +4,7 @@ System tray icon — shows connection status and provides the quick-action menu.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap
@@ -14,68 +14,51 @@ logger = logging.getLogger(__name__)
 
 
 def _make_headset_icon(color: str, size: int = 22) -> QIcon:
-    """
-    Generate a simple headset-shaped icon programmatically.
-    No external image files required.
-    """
     pix = QPixmap(size, size)
-    pix.fill(QColor(0, 0, 0, 0))  # transparent
+    pix.fill(QColor(0, 0, 0, 0))
 
     p = QPainter(pix)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     c = QColor(color)
-    p.setPen(c)
-    p.setBrush(c)
 
-    s = size
-    # Headband arc
     from PyQt6.QtCore import QRect
     from PyQt6.QtGui import QPen
-    pen = QPen(c, max(1, s // 8))
+    pen = QPen(c, max(1, size // 8))
     p.setPen(pen)
     p.setBrush(QColor(0, 0, 0, 0))
-    p.drawArc(QRect(s // 6, s // 6, s * 2 // 3, s * 2 // 3), 0, 180 * 16)
+    p.drawArc(QRect(size // 6, size // 6, size * 2 // 3, size * 2 // 3), 0, 180 * 16)
 
-    # Left earpad
     p.setBrush(c)
     p.setPen(QColor(0, 0, 0, 0))
-    p.drawEllipse(1, s * 5 // 10, s // 5, s // 4)
-
-    # Right earpad
-    p.drawEllipse(s - 1 - s // 5, s * 5 // 10, s // 5, s // 4)
+    p.drawEllipse(1, size * 5 // 10, size // 5, size // 4)
+    p.drawEllipse(size - 1 - size // 5, size * 5 // 10, size // 5, size // 4)
 
     p.end()
     return QIcon(pix)
 
 
 _ICON_INACTIVE = None
-_ICON_ACTIVE = None
-_ICON_CALL = None
+_ICON_ACTIVE   = None
+_ICON_CALL     = None
 
 
 def _get_icons():
     global _ICON_INACTIVE, _ICON_ACTIVE, _ICON_CALL
     if _ICON_INACTIVE is None:
         _ICON_INACTIVE = _make_headset_icon("#888888")
-        _ICON_ACTIVE   = _make_headset_icon("#34a853")  # green
-        _ICON_CALL     = _make_headset_icon("#ea4335")  # red
+        _ICON_ACTIVE   = _make_headset_icon("#34a853")
+        _ICON_CALL     = _make_headset_icon("#ea4335")
     return _ICON_INACTIVE, _ICON_ACTIVE, _ICON_CALL
 
 
 class TrayIcon(QObject):
-    """
-    System tray icon with state management.
-    States: disconnected → connected → in-call.
-    """
-
-    # Signals — connect these in HandsFreeApp
-    action_show_window = pyqtSignal()
-    action_connect = pyqtSignal()
-    action_disconnect = pyqtSignal()
+    action_show_window   = pyqtSignal()
+    action_connect       = pyqtSignal()
+    action_disconnect    = pyqtSignal()
     action_sync_contacts = pyqtSignal()
-    action_quit = pyqtSignal()
-    action_answer = pyqtSignal()
-    action_hangup = pyqtSignal()
+    action_quit          = pyqtSignal()
+    action_answer        = pyqtSignal()
+    action_hangup        = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -92,12 +75,9 @@ class TrayIcon(QObject):
         self._connected_device: Optional[str] = None
         self._in_call = False
 
-    # ── State setters ─────────────────────────────────────────────────────────
-
     def set_disconnected(self):
         self._connected_device = None
         self._in_call = False
-        _, _, _ = _get_icons()
         icon_inactive, _, _ = _get_icons()
         self._tray.setIcon(icon_inactive)
         self._tray.setToolTip("HandsFree — Not connected")
@@ -115,7 +95,7 @@ class TrayIcon(QObject):
         self._in_call = True
         _, _, icon_call = _get_icons()
         self._tray.setIcon(icon_call)
-        tip = f"HandsFree — Call active"
+        tip = "HandsFree — Call active"
         if number:
             tip += f" ({number})"
         if self._connected_device:
@@ -131,14 +111,11 @@ class TrayIcon(QObject):
             self.set_disconnected()
 
     def show_notification(self, title: str, message: str):
-        """Show a system tray balloon notification."""
         self._tray.showMessage(
             title, message,
             QSystemTrayIcon.MessageIcon.Information,
             3000,
         )
-
-    # ── Menu ──────────────────────────────────────────────────────────────────
 
     def _build_menu(self) -> QMenu:
         menu = QMenu()

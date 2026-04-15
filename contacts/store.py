@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS contacts (
     phone_number_normalized TEXT NOT NULL DEFAULT '',
     custom_name             TEXT,
     last_synced             TEXT,
-    raw_vcard               TEXT
+    raw_vcard               TEXT,
+    photo_data              BLOB
 );
 
 CREATE INDEX IF NOT EXISTS idx_contacts_number
@@ -56,6 +57,10 @@ class ContactStore:
     def _init_schema(self):
         with self._lock, self._conn:
             self._conn.executescript(SCHEMA)
+            # Migrate: add photo_data column if it doesn't exist yet
+            cols = [r[1] for r in self._conn.execute("PRAGMA table_info(contacts)").fetchall()]
+            if "photo_data" not in cols:
+                self._conn.execute("ALTER TABLE contacts ADD COLUMN photo_data BLOB")
 
     # ── Contacts ──────────────────────────────────────────────────────────────
 
@@ -152,6 +157,13 @@ class ContactStore:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
 
+    def set_contact_photo(self, contact_id: int, photo_data: bytes) -> None:
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE contacts SET photo_data = ? WHERE id = ?",
+                (photo_data, contact_id),
+            )
+
     @staticmethod
     def _row_to_contact(row) -> Contact:
         return Contact(
@@ -163,6 +175,7 @@ class ContactStore:
             custom_name=row["custom_name"],
             last_synced=row["last_synced"],
             raw_vcard=row["raw_vcard"],
+            photo_data=row["photo_data"] if "photo_data" in row.keys() else None,
         )
 
     # ── Call log ──────────────────────────────────────────────────────────────
@@ -190,6 +203,52 @@ class ContactStore:
                 "UPDATE call_log SET duration_sec = ? WHERE id = ?",
                 (duration_sec, call_id),
             )
+
+    def update_call_direction(self, call_id: int, direction: str):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE call_log SET direction = ? WHERE id = ?",
+                (direction, call_id),
+            )
+
+    def update_call_contact(self, call_id: int, contact_id: int):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE call_log SET contact_id = ? WHERE id = ?",
+                (contact_id, call_id),
+            )
+
+    def get_call_log_for_number(
+        self, number: str, limit: int = 50, contact_id: int | None = None
+    ) -> list[CallLog]:
+        normalized = Contact.normalize_number(number)
+        suffix = normalized[-7:] if len(normalized) >= 7 else normalized
+        with self._lock:
+            if contact_id is not None:
+                rows = self._conn.execute(
+                    """SELECT * FROM call_log
+                       WHERE contact_id = ?
+                          OR number = ?
+                          OR number LIKE ?
+                       ORDER BY started_at DESC LIMIT ?""",
+                    (contact_id, number, f"%{suffix}", limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT * FROM call_log
+                       WHERE number = ?
+                          OR number LIKE ?
+                       ORDER BY started_at DESC LIMIT ?""",
+                    (number, f"%{suffix}", limit),
+                ).fetchall()
+        return [
+            CallLog(
+                id=r["id"], direction=r["direction"], number=r["number"],
+                contact_id=r["contact_id"], started_at=r["started_at"],
+                duration_sec=r["duration_sec"],
+            )
+            for r in rows
+        ]
 
     def get_call_log(self, limit: int = 100) -> list[CallLog]:
         with self._lock:

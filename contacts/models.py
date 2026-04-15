@@ -17,6 +17,7 @@ class Contact:
     custom_name: Optional[str] = None  # User-set rename; overrides display_name
     last_synced: Optional[str] = None
     raw_vcard: Optional[str] = None
+    photo_data: Optional[bytes] = None  # User-uploaded photo (overrides vCard photo)
 
     @property
     def effective_name(self) -> str:

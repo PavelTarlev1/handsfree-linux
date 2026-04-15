@@ -55,6 +55,7 @@ class SLCConnection:
         on_call_ended()
         on_call_active()
         on_codec_negotiated(codec: int)
+        on_battery(level: int)   # 0-5, maps to 0-100%
     """
 
     READ_TIMEOUT = 5.0   # seconds; allows clean shutdown via self._stop

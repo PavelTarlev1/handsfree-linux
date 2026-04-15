@@ -58,6 +58,8 @@ class HandsFreeApp(QObject):
         self._cfg = Config.load()
         self._store = ContactStore(DB_FILE)
         self._audio = AudioManager()
+        from audio.ringer import Ringer
+        self._ringer = Ringer()
         self._pbap_lock = threading.Lock()  # prevents concurrent PBAP syncs
 
         self._bridge = _Bridge()
@@ -70,6 +72,7 @@ class HandsFreeApp(QObject):
         self._call_log_id: Optional[int] = None
         self._reconnect_timer: Optional[threading.Timer] = None
         self._call_start_time: Optional[float] = None
+        self._call_was_active: bool = False   # True once _on_call_active fires
 
         self._init_ui()
         self._connect_bridge_signals()
@@ -106,10 +109,11 @@ class HandsFreeApp(QObject):
         self._window.audio_input_changed.connect(self._on_audio_input_changed)
         self._window.volume_changed.connect(self._on_volume_changed)
         self._window.hangup_requested.connect(self._on_hangup)
+        self._window.mute_requested.connect(self._on_mute_requested)
 
         # Tray signals → app
         self._tray.action_show_window.connect(self._toggle_window)
-        self._tray.action_connect.connect(lambda: self._window.show())
+        self._tray.action_connect.connect(self._window.show)
         self._tray.action_disconnect.connect(self._on_disconnect_requested)
         self._tray.action_sync_contacts.connect(self._trigger_pbap_sync)
         self._tray.action_answer.connect(self._on_answer)
@@ -135,7 +139,7 @@ class HandsFreeApp(QObject):
         b.sig_voip_started.connect(self._on_voip_started)
         b.sig_voip_ended.connect(self._on_voip_ended)
         b.sig_sync_done.connect(self._on_sync_done)
-        b.sig_devices_ready.connect(lambda devs: self._window.set_devices(devs))
+        b.sig_devices_ready.connect(self._window.set_devices)
         b.sig_dial_error.connect(self._on_dial_error)
 
     def _start_bluetooth(self):
@@ -253,10 +257,10 @@ class HandsFreeApp(QObject):
             num_row.addWidget(num_label)
             btn_copy = QPushButton("Copy")
             btn_copy.setFixedWidth(70)
-            btn_copy.clicked.connect(lambda: (
-                QApplication.clipboard().setText(number),
-                btn_copy.setText("Copied ✓"),
-            ))
+            def _do_copy(checked: bool = False, _n=number, _b=btn_copy):
+                QApplication.clipboard().setText(_n)
+                _b.setText("Copied ✓")
+            btn_copy.clicked.connect(_do_copy)
             num_row.addWidget(btn_copy)
             layout.addLayout(num_row)
 
@@ -275,6 +279,9 @@ class HandsFreeApp(QObject):
         self._window.on_connected(device_name)
         self._tray.show_notification("HandsFree", f"Connected to {device_name}")
         self._refresh_devices()
+        # Remember this device for future sessions
+        addr = device_path.split("/")[-1].replace("dev_", "").replace("_", ":")
+        self._cfg.remember_device(device_path, addr, device_name)
 
     @pyqtSlot(str)
     def _on_disconnected(self, device_path: str):
@@ -340,27 +347,35 @@ class HandsFreeApp(QObject):
         self._popup.rejected.connect(self._on_reject)
         self._popup.show()
 
+        self._ringer.start()
         self._tray.set_in_call(number)
 
-        # Start logging as incoming
-        contact = self._store.lookup_by_number(number)
+        # Log as incoming; start_time is set only when the call becomes active
         self._call_log_id = self._store.log_call(
             "incoming", number,
             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             contact_id=contact.id if contact else None,
         )
-        self._call_start_time = time.monotonic()
+        self._call_was_active = False
+        self._call_start_time = None
 
     @pyqtSlot()
     def _on_call_active(self):
+        self._call_was_active = True
+        if not self._call_start_time:
+            self._call_start_time = time.monotonic()
         self._tray.set_in_call(self._ring_number)
         self._window.on_call_active(self._ring_number)
         self._audio.on_call_started(self._active_codec)
-        if not self._call_start_time:
-            self._call_start_time = time.monotonic()
 
     @pyqtSlot()
     def _on_call_ended(self):
+        # Guard: may be called twice (user hangup + SLC confirmation)
+        if not (self._call_log_id or self._call_start_time or self._ring_number):
+            return
+
+        self._ringer.stop()
+
         if self._popup:
             try:
                 self._popup.close()
@@ -368,16 +383,28 @@ class HandsFreeApp(QObject):
                 pass
             self._popup = None
 
+        # ── DB writes first, THEN refresh the UI ─────────────────────────────
+        if self._call_log_id:
+            if self._call_was_active and self._call_start_time:
+                duration = int(time.monotonic() - self._call_start_time)
+                self._store.update_call_duration(self._call_log_id, duration)
+            else:
+                self._store.update_call_direction(self._call_log_id, "missed")
+
+            # Back-fill contact_id if it was missing at ring/dial time
+            number = self._ring_number or self._last_dialled
+            if number:
+                contact = self._store.lookup_by_number(number)
+                if contact:
+                    self._store.update_call_contact(self._call_log_id, contact.id)
+
         self._tray.set_call_ended()
-        self._window.on_call_ended()
+        self._window.on_call_ended()   # refresh_call_log() runs here — now reads updated rows
         self._audio.on_call_ended()
 
-        # Update call log duration
-        if self._call_log_id and self._call_start_time:
-            duration = int(time.monotonic() - self._call_start_time)
-            self._store.update_call_duration(self._call_log_id, duration)
         self._call_log_id = None
         self._call_start_time = None
+        self._call_was_active = False
         self._ring_number = ""
 
     @pyqtSlot(int)
@@ -463,16 +490,24 @@ class HandsFreeApp(QObject):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _on_answer(self):
+        self._ringer.stop()
         if self._hfp:
             self._hfp.answer(self._current_device_path)
 
     def _on_reject(self):
+        self._ringer.stop()
         if self._hfp:
             self._hfp.reject(self._current_device_path)
 
     def _on_hangup(self):
         if self._hfp:
             self._hfp.hangup(self._current_device_path)
+        # Reset UI immediately — don't wait for the SLC callback
+        self._on_call_ended()
+
+    @pyqtSlot(bool)
+    def _on_mute_requested(self, muted: bool):
+        self._audio.mute_microphone(muted)
 
     @pyqtSlot(str)
     def _on_dial_requested(self, number: str):
@@ -485,6 +520,7 @@ class HandsFreeApp(QObject):
 
         number = self._format_dial_number(number)
         self._last_dialled = number
+        self._ring_number = number   # so _on_call_active has the right number
         logger.info("Dialing: %s", number)
         self._hfp.dial(number, self._current_device_path)
 
@@ -495,13 +531,11 @@ class HandsFreeApp(QObject):
             contact_id=contact.id if contact else None,
         )
         self._call_start_time = time.monotonic()
+        self._call_was_active = True   # outgoing — treat as active from the start
 
-        # Show iPhone-specific hint — iOS blocks ATD when screen is locked
-        self._tray.show_notification(
-            "Dialing…",
-            f"Calling {number} via {self._current_device_name or 'phone'}\n"
-            "If it fails, unlock your iPhone screen first.",
-        )
+        # Show in-call screen immediately so user sees End Call + volume controls
+        self._window.on_dialling(number)
+        self._tray.set_in_call(number)
 
     def _format_dial_number(self, number: str) -> str:
         """
