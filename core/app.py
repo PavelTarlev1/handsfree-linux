@@ -347,7 +347,7 @@ class HandsFreeApp(QObject):
         self._popup.rejected.connect(self._on_reject)
         self._popup.show()
 
-        self._ringer.start()
+        self._ringer.start(self._ringer.INCOMING)
         self._tray.set_in_call(number)
 
         # Log as incoming; start_time is set only when the call becomes active
@@ -361,6 +361,7 @@ class HandsFreeApp(QObject):
 
     @pyqtSlot()
     def _on_call_active(self):
+        self._ringer.stop()   # stop ringback (outgoing) or ringtone (incoming)
         self._call_was_active = True
         if not self._call_start_time:
             self._call_start_time = time.monotonic()
@@ -523,6 +524,7 @@ class HandsFreeApp(QObject):
         self._ring_number = number   # so _on_call_active has the right number
         logger.info("Dialing: %s", number)
         self._hfp.dial(number, self._current_device_path)
+        self._ringer.start(self._ringer.OUTGOING)
 
         contact = self._store.lookup_by_number(number)
         self._call_log_id = self._store.log_call(

@@ -65,20 +65,26 @@ class ContactStore:
     # ── Contacts ──────────────────────────────────────────────────────────────
 
     def upsert_contact(self, contact: Contact) -> int:
-        """Insert or update a contact. Preserves custom_name on update."""
+        """Insert or update a contact. Preserves custom_name and user-uploaded
+        photo_data on update; PBAP photo only fills photo_data when it is NULL."""
         normalized = Contact.normalize_number(contact.phone_number)
         with self._lock, self._conn:
             cur = self._conn.execute(
                 """
                 INSERT INTO contacts
-                    (phone_uid, display_name, phone_number, phone_number_normalized, last_synced, raw_vcard)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (phone_uid, display_name, phone_number, phone_number_normalized,
+                     last_synced, raw_vcard, photo_data)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(phone_uid) DO UPDATE SET
                     display_name            = excluded.display_name,
                     phone_number            = excluded.phone_number,
                     phone_number_normalized = excluded.phone_number_normalized,
                     last_synced             = excluded.last_synced,
-                    raw_vcard               = excluded.raw_vcard
+                    raw_vcard               = excluded.raw_vcard,
+                    photo_data              = CASE
+                        WHEN photo_data IS NULL THEN excluded.photo_data
+                        ELSE photo_data
+                    END
                 """,
                 (
                     contact.phone_uid,
@@ -87,6 +93,7 @@ class ContactStore:
                     normalized,
                     contact.last_synced,
                     contact.raw_vcard,
+                    contact.photo_data,
                 ),
             )
             return cur.lastrowid or self._get_id_by_uid(contact.phone_uid)
@@ -117,20 +124,43 @@ class ContactStore:
         return [self._row_to_contact(r) for r in rows]
 
     def lookup_by_number(self, number: str) -> Optional[Contact]:
+        import logging as _log
+        log = _log.getLogger(__name__)
+
         normalized = Contact.normalize_number(number)
+        digits_only = normalized.lstrip("+")   # strip leading + for alternate matching
+
         with self._lock:
-            # Try exact normalized match first
+            # 1. Exact normalized match
             row = self._conn.execute(
                 "SELECT * FROM contacts WHERE phone_number_normalized = ? LIMIT 1",
                 (normalized,),
             ).fetchone()
-            if not row and len(normalized) >= 7:
-                # Try suffix match (last 7+ digits — handles country code differences)
-                suffix = normalized[-7:]
+
+            # 2. Exact match on digits-only form (handles missing/extra + prefix)
+            if not row:
                 row = self._conn.execute(
-                    "SELECT * FROM contacts WHERE phone_number_normalized LIKE ? LIMIT 1",
-                    (f"%{suffix}",),
+                    "SELECT * FROM contacts WHERE phone_number_normalized = ? LIMIT 1",
+                    (digits_only,),
                 ).fetchone()
+
+            # 3. Suffix match — try increasing suffix lengths (8, 9, 10 digits)
+            #    to handle country-code prefix differences
+            if not row:
+                for suffix_len in (9, 8, 7):
+                    if len(digits_only) >= suffix_len:
+                        suffix = digits_only[-suffix_len:]
+                        row = self._conn.execute(
+                            "SELECT * FROM contacts WHERE phone_number_normalized LIKE ? LIMIT 1",
+                            (f"%{suffix}",),
+                        ).fetchone()
+                        if row:
+                            break
+
+        if row:
+            log.debug("lookup_by_number(%r) → %s", number, row["display_name"])
+        else:
+            log.info("lookup_by_number(%r) → no match (normalized=%r)", number, normalized)
         return self._row_to_contact(row) if row else None
 
     def get_contact_by_id(self, contact_id: int) -> Optional[Contact]:

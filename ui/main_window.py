@@ -1109,9 +1109,13 @@ class MainWindow(QMainWindow):
         logs = self._store.get_call_log(limit=200)
         for entry in logs:
             contact = self._store.get_contact_by_id(entry.contact_id) if entry.contact_id else None
-            # Try lookup by number if contact_id not set (e.g. new calls)
             if not contact:
                 contact = self._store.lookup_by_number(entry.number)
+            if not contact:
+                logger.info(
+                    "call log: no contact for number=%r contact_id=%s",
+                    entry.number, entry.contact_id,
+                )
             name = contact.effective_name if contact else entry.number
 
             icon  = {"incoming": "↙", "outgoing": "↗", "missed": "✗"}.get(entry.direction, "?")

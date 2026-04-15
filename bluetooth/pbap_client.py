@@ -187,7 +187,8 @@ class PBAPClient:
             logger.info("PBAP: transfer started at %s", transfer_path)
             self._wait_for_transfer(str(transfer_path), tmp_path)
             contacts = self._parse_vcf(tmp_path)
-            logger.info("Pulled %d contacts via PBAP", len(contacts))
+            with_photos = sum(1 for c in contacts if c.photo_data)
+            logger.info("Pulled %d contacts via PBAP (%d with photos)", len(contacts), with_photos)
             return contacts
 
         except Exception as e:
@@ -287,6 +288,11 @@ class PBAPClient:
                 if not uid:
                     uid = f"__gen_{fn}_{tel}__"
 
+                # Extract photo if present
+                photo_data = _extract_photo_from_vcard(vcard)
+                if photo_data:
+                    logger.debug("PBAP: photo found for %s (%d bytes)", fn, len(photo_data))
+
                 contacts.append(Contact(
                     phone_uid=uid,
                     display_name=fn,
@@ -294,8 +300,39 @@ class PBAPClient:
                     phone_number_normalized=Contact.normalize_number(tel),
                     last_synced=now,
                     raw_vcard=vcard.serialize(),
+                    photo_data=photo_data,
                 ))
             except Exception as e:
                 logger.debug("vCard parse error: %s", e)
 
         return contacts
+
+
+def _extract_photo_from_vcard(vcard) -> Optional[bytes]:
+    """
+    Extract binary photo data from a parsed vobject vCard.
+    Handles ENCODING=b (base64) and raw binary PHOTO properties.
+    """
+    import base64 as _b64
+
+    photo_list = vcard.contents.get("photo", [])
+    if not photo_list:
+        return None
+
+    photo_prop = photo_list[0]
+
+    # vobject decodes ENCODING=b automatically — value is already bytes
+    val = photo_prop.value
+    if isinstance(val, bytes) and len(val) > 0:
+        return val
+
+    # Some implementations give a string (base64 text without decoding)
+    if isinstance(val, str) and val.strip():
+        try:
+            # Strip whitespace that can appear in multi-line base64
+            clean = "".join(val.split())
+            return _b64.b64decode(clean + "==")
+        except Exception:
+            pass
+
+    return None
