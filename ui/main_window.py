@@ -9,10 +9,10 @@ from typing import Optional
 from PyQt6.QtCore import Qt, QRectF, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QFrame, QGroupBox,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMainWindow, QMenu, QPushButton, QSlider, QSplitter, QStackedWidget,
-    QStatusBar, QTabWidget, QVBoxLayout, QWidget,
+    QMainWindow, QMenu, QPushButton, QScrollArea, QSlider, QSplitter,
+    QStackedWidget, QStatusBar, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from contacts.store import ContactStore
@@ -544,7 +544,21 @@ class MainWindow(QMainWindow):
                 self._stop_mic_test()
 
     def _build_settings_tab(self) -> QWidget:
+        # Outer widget returned to the tab — contains only the scroll area
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        outer_layout.addWidget(scroll)
+
+        # Inner widget that actually holds all the settings content
         w = QWidget()
+        scroll.setWidget(w)
+
         layout = QVBoxLayout(w)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
@@ -554,6 +568,7 @@ class MainWindow(QMainWindow):
 
         # ── Call audio group ──────────────────────────────────────────────────
         audio_group = QGroupBox("Call Audio Device")
+        audio_group.setMinimumHeight(280)
         ag_layout = QVBoxLayout(audio_group)
         ag_layout.setSpacing(10)
 
@@ -737,6 +752,17 @@ class MainWindow(QMainWindow):
         tg_layout.addWidget(self._theme_combo, 1)
         layout.addWidget(theme_group)
 
+        # ── Developer mode ────────────────────────────────────────────────────
+        dev_group = QGroupBox("Developer")
+        dev_layout = QVBoxLayout(dev_group)
+        self._chk_dev_mode = QCheckBox("Developer mode")
+        self._chk_dev_mode.setToolTip(
+            "Show verbose debug output in the terminal"
+        )
+        self._chk_dev_mode.toggled.connect(self._on_dev_mode_toggled)
+        dev_layout.addWidget(self._chk_dev_mode)
+        layout.addWidget(dev_group)
+
         # ── Config file hint ──────────────────────────────────────────────────
         hint = QLabel("Advanced settings: ~/.config/handsfree/config.toml")
         hint.setObjectName("hintLabel")
@@ -746,7 +772,7 @@ class MainWindow(QMainWindow):
 
         # Populate devices when this tab is first shown
         self._audio_devices_loaded = False
-        return w
+        return outer
 
     # ── Settings helpers ──────────────────────────────────────────────────────
 
@@ -885,6 +911,12 @@ class MainWindow(QMainWindow):
     def _on_theme_combo_changed(self, name: str):
         self.apply_theme(name)
         self.theme_changed.emit(name)
+
+    def _on_dev_mode_toggled(self, enabled: bool):
+        import logging
+        level = logging.DEBUG if enabled else logging.INFO
+        logging.getLogger().setLevel(level)
+        logger.debug("Developer mode %s", "enabled" if enabled else "disabled")
 
     # ── Audio tests ───────────────────────────────────────────────────────────
 
@@ -1449,6 +1481,8 @@ class MainWindow(QMainWindow):
             #incallEndBtn:pressed {{ background: #a02820; }}
             /* ── Misc ── */
             #hintLabel {{ color: {t.fg_dim}; font-size: 11px; }}
+            QScrollArea {{ background: {t.bg}; border: none; }}
+            QScrollArea > QWidget > QWidget {{ background: {t.bg}; }}
             /* ── Scrollbars (VS Code style) ── */
             QScrollBar:vertical {{
                 background: transparent;
