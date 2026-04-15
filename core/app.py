@@ -656,21 +656,28 @@ class HandsFreeApp(QObject):
         ).start()
 
     def _connect_device_thread(self, device_path: str):
+        # Use bluetoothctl instead of D-Bus directly — dbus-python is not
+        # thread-safe and calling Connect() from a worker thread deadlocks
+        # the GLib main loop, freezing the UI for ~25 s.
+        address = device_path.split("/")[-1].replace("dev_", "").replace("_", ":")
         try:
-            import dbus
-            bus = self._hfp._bus
-            device = dbus.Interface(
-                bus.get_object("org.bluez", device_path),
-                "org.bluez.Device1",
+            import subprocess
+            result = subprocess.run(
+                ["bluetoothctl", "connect", address],
+                timeout=30,
+                capture_output=True,
+                text=True,
             )
-            device.Connect()
+            if result.returncode != 0:
+                output = (result.stdout + result.stderr).strip()
+                if "AlreadyConnected" in output or "br-connection-busy" in output:
+                    logger.debug("bluetoothctl connect: %s (may have succeeded)", output)
+                else:
+                    logger.error("bluetoothctl connect failed: %s", output)
+        except subprocess.TimeoutExpired:
+            logger.warning("bluetoothctl connect timed out for %s", address)
         except Exception as e:
-            err_name = getattr(e, "_dbus_error_name", "")
-            # NoReply is common when the phone connects before D-Bus times out — not an error
-            if "NoReply" in err_name or "AlreadyConnected" in err_name:
-                logger.debug("Connect D-Bus reply: %s (connection may have succeeded)", err_name)
-            else:
-                logger.error("Connect failed: %s", e)
+            logger.error("Connect failed: %s", e)
 
     @pyqtSlot()
     def _on_disconnect_requested(self):
@@ -684,14 +691,19 @@ class HandsFreeApp(QObject):
         ).start()
 
     def _disconnect_device_thread(self, device_path: str):
+        address = device_path.split("/")[-1].replace("dev_", "").replace("_", ":")
         try:
-            import dbus
-            bus = self._hfp._bus
-            device = dbus.Interface(
-                bus.get_object("org.bluez", device_path),
-                "org.bluez.Device1",
+            import subprocess
+            result = subprocess.run(
+                ["bluetoothctl", "disconnect", address],
+                timeout=15,
+                capture_output=True,
+                text=True,
             )
-            device.Disconnect()
+            if result.returncode != 0:
+                logger.error("bluetoothctl disconnect failed: %s", (result.stdout + result.stderr).strip())
+        except subprocess.TimeoutExpired:
+            logger.warning("bluetoothctl disconnect timed out for %s", address)
         except Exception as e:
             logger.error("Disconnect failed: %s", e)
 
