@@ -38,6 +38,11 @@ class Ringer:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._sound: Path = INCOMING
+        self._volume: int = 80   # 0-100 %
+
+    def set_volume(self, pct: int):
+        """Set ring volume (0-100). Takes effect on the next ring loop iteration."""
+        self._volume = max(0, min(100, pct))
 
     def start(self, sound: Path | None = None):
         self.stop()   # ensure clean state
@@ -67,8 +72,10 @@ class Ringer:
             return
         try:
             if self._sound.exists():
+                # paplay volume: 0-65536, where 65536 = 100 %
+                pa_vol = int(self._volume * 655.36)
                 proc = subprocess.Popen(
-                    ["paplay", str(self._sound)],
+                    ["paplay", f"--volume={pa_vol}", str(self._sound)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )

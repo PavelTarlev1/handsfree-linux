@@ -1,12 +1,13 @@
 """
-Contacts list widget — shows all stored contacts with search + rename/delete.
+Contacts list widget — avatar bubble + name, single-click opens profile.
 """
 from __future__ import annotations
 
 import logging
 from typing import Callable, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -19,11 +20,112 @@ from ui.contact_profile import ContactProfileDialog
 
 logger = logging.getLogger(__name__)
 
+# Palette for initials bubbles — cycles by hash of name
+_BUBBLE_COLORS = [
+    "#4a90d9", "#7b68ee", "#e06c75", "#56b6c2",
+    "#98c379", "#d19a66", "#c678dd", "#61afef",
+]
+
+_AVATAR_SIZE = 42   # px — diameter of the bubble
+
+
+def _make_initials(name: str) -> str:
+    """Return up to 2 initials from a display name."""
+    words = name.strip().split()
+    if not words or not words[0]:
+        return "?"
+    if len(words) == 1:
+        return words[0][0].upper()
+    return (words[0][0] + words[-1][0]).upper()
+
+
+def _bubble_color(name: str) -> str:
+    return _BUBBLE_COLORS[hash(name) % len(_BUBBLE_COLORS)]
+
+
+def _avatar_pixmap(photo_data: bytes | None, name: str, size: int) -> QPixmap:
+    """
+    Build a circular QPixmap.
+    - If photo_data: decode, centre-crop to square, clip to circle.
+    - Otherwise: solid colour + 2-letter initials.
+    """
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    # Clip all drawing to a circle
+    path = QPainterPath()
+    path.addEllipse(0, 0, size, size)
+    painter.setClipPath(path)
+
+    if photo_data:
+        src = QPixmap()
+        src.loadFromData(photo_data)
+        if not src.isNull():
+            # Centre-crop to square
+            side = min(src.width(), src.height())
+            x = (src.width()  - side) // 2
+            y = (src.height() - side) // 2
+            src = src.copy(x, y, side, side).scaled(
+                size, size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.drawPixmap(0, 0, src)
+            painter.end()
+            return pm
+        # fall through to initials if decode failed
+
+    # Initials bubble
+    painter.setBrush(QColor(_bubble_color(name)))
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.drawRect(0, 0, size, size)
+
+    painter.setPen(QColor("white"))
+    font = QFont()
+    font.setPointSize(int(size * 0.32))
+    font.setBold(True)
+    painter.setFont(font)
+    painter.drawText(0, 0, size, size, Qt.AlignmentFlag.AlignCenter, _make_initials(name))
+
+    painter.end()
+    return pm
+
+
+class _ContactRow(QWidget):
+    """Single row: avatar bubble + name label."""
+
+    def __init__(self, contact: Contact, parent=None):
+        super().__init__(parent)
+        self.contact = contact
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 4, 10, 4)
+        layout.setSpacing(12)
+
+        # Avatar — transparent background so the circle is truly circular
+        avatar = QLabel()
+        avatar.setStyleSheet("background: transparent; border: none;")
+        pm = _avatar_pixmap(contact.photo_data, contact.effective_name, _AVATAR_SIZE)
+        avatar.setPixmap(pm)
+        avatar.setFixedSize(_AVATAR_SIZE, _AVATAR_SIZE)
+        layout.addWidget(avatar)
+
+        # Name only
+        name_lbl = QLabel(contact.effective_name)
+        name_lbl.setStyleSheet("background: transparent; border: none;")
+        font = name_lbl.font()
+        font.setPointSize(11)
+        name_lbl.setFont(font)
+        layout.addWidget(name_lbl, 1)
+
 
 class ContactsWidget(QWidget):
     """Embeddable contacts list with search and context menu actions."""
 
-    dial_requested = pyqtSignal(str)  # Emitted with phone number when user clicks Dial
+    dial_requested = pyqtSignal(str)
 
     def __init__(self, store: ContactStore, dial_cb=None, parent=None):
         super().__init__(parent)
@@ -36,6 +138,7 @@ class ContactsWidget(QWidget):
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
 
         # Search bar
         search_row = QHBoxLayout()
@@ -43,7 +146,6 @@ class ContactsWidget(QWidget):
         self._search.setPlaceholderText("Search contacts…")
         self._search.textChanged.connect(self._on_search)
         search_row.addWidget(self._search)
-
         btn_refresh = QPushButton("Sync")
         btn_refresh.setToolTip("Sync contacts from phone via PBAP")
         btn_refresh.setFixedWidth(60)
@@ -53,14 +155,28 @@ class ContactsWidget(QWidget):
 
         # Count label
         self._count_label = QLabel("0 contacts")
-        self._count_label.setStyleSheet("color: gray; font-size: 11px;")
+        self._count_label.setObjectName("hintLabel")
         layout.addWidget(self._count_label)
 
-        # Contact list
+        # List — no separators, no box border
         self._list = QListWidget()
+        self._list.setSpacing(2)
+        self._list.setFrameShape(QListWidget.Shape.NoFrame)
+        self._list.setStyleSheet("""
+            QListWidget { border: none; outline: none; }
+            QListWidget::item {
+                border: none;
+                border-radius: 8px;
+                margin: 1px 6px;
+            }
+            QListWidget::item:selected,
+            QListWidget::item:hover {
+                background: rgba(127,127,127,0.12);
+            }
+        """)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._show_context_menu)
-        self._list.itemDoubleClicked.connect(self._on_double_click)
+        self._list.itemClicked.connect(self._on_click)
         layout.addWidget(self._list)
 
         # Bottom action buttons
@@ -72,34 +188,44 @@ class ContactsWidget(QWidget):
         layout.addLayout(btn_row)
 
     def refresh(self):
-        """Reload contacts from the database."""
         query = self._search.text().strip()
-        if query:
-            self._contacts = self._store.search(query)
-        else:
-            self._contacts = self._store.get_all()
+        self._contacts = self._store.search(query) if query else self._store.get_all()
         self._populate_list(self._contacts)
 
-    def _on_search(self, text: str):
+    def _on_search(self, _text: str):
         self.refresh()
 
     def _populate_list(self, contacts: list[Contact]):
         self._list.clear()
         for c in contacts:
-            item = QListWidgetItem()
-            item.setText(f"{c.effective_name}  ·  {c.phone_number}")
+            item = QListWidgetItem(self._list)
+            row = _ContactRow(c)
+            item.setSizeHint(QSize(0, _AVATAR_SIZE + 12))
             item.setData(Qt.ItemDataRole.UserRole, c)
-            if c.custom_name:
-                item.setToolTip(f"Renamed from: {c.display_name}")
             self._list.addItem(item)
+            self._list.setItemWidget(item, row)
         total = self._store.count()
         self._count_label.setText(f"{total} contact{'s' if total != 1 else ''}")
 
-    def _selected_contact(self) -> Optional[Contact]:
-        item = self._list.currentItem()
-        if not item:
-            return None
-        return item.data(Qt.ItemDataRole.UserRole)
+    def _contact_from_item(self, item: QListWidgetItem) -> Optional[Contact]:
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    # ── Interactions ──────────────────────────────────────────────────────────
+
+    def _on_click(self, item: QListWidgetItem):
+        contact = self._contact_from_item(item)
+        if contact:
+            self._open_profile(contact)
+
+    def _open_profile(self, contact: Contact):
+        dlg = ContactProfileDialog(
+            store=self._store,
+            dial_cb=self._dial_cb,
+            contact=contact,
+            parent=self,
+        )
+        dlg.exec()
+        self.refresh()
 
     # ── Context menu ──────────────────────────────────────────────────────────
 
@@ -107,19 +233,16 @@ class ContactsWidget(QWidget):
         item = self._list.itemAt(pos)
         if not item:
             return
-        contact: Contact = item.data(Qt.ItemDataRole.UserRole)
+        contact: Contact = self._contact_from_item(item)
 
         menu = QMenu(self)
-        act_profile = menu.addAction(f"Open profile")
-        act_dial = menu.addAction(f"Call {contact.effective_name}")
+        act_profile = menu.addAction("Open profile")
+        act_dial    = menu.addAction(f"Call {contact.effective_name}")
         menu.addSeparator()
-        act_rename = menu.addAction("Rename…")
-        if contact.custom_name:
-            act_clear = menu.addAction("Clear custom name")
-        else:
-            act_clear = None
+        act_rename  = menu.addAction("Rename…")
+        act_clear   = menu.addAction("Clear custom name") if contact.custom_name else None
         menu.addSeparator()
-        act_delete = menu.addAction("Delete contact")
+        act_delete  = menu.addAction("Delete contact")
 
         action = menu.exec(self._list.mapToGlobal(pos))
         if action == act_profile:
@@ -134,26 +257,11 @@ class ContactsWidget(QWidget):
         elif action == act_delete:
             self._delete_contact(contact)
 
-    def _on_double_click(self, item: QListWidgetItem):
-        contact: Contact = item.data(Qt.ItemDataRole.UserRole)
-        self._open_profile(contact)
-
-    def _open_profile(self, contact: Contact):
-        dlg = ContactProfileDialog(
-            store=self._store,
-            dial_cb=self._dial_cb,
-            contact=contact,
-            parent=self,
-        )
-        dlg.exec()
-        self.refresh()   # name/photo may have changed
-
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _rename_contact(self, contact: Contact):
         new_name, ok = QInputDialog.getText(
-            self,
-            "Rename Contact",
+            self, "Rename Contact",
             f"New name for {contact.display_name}:",
             text=contact.custom_name or contact.display_name,
         )
@@ -163,8 +271,7 @@ class ContactsWidget(QWidget):
 
     def _delete_contact(self, contact: Contact):
         reply = QMessageBox.question(
-            self,
-            "Delete Contact",
+            self, "Delete Contact",
             f"Delete {contact.effective_name}?\n"
             "This only removes the local copy — not from your phone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -196,16 +303,13 @@ class _AddContactDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Add Contact")
         layout = QVBoxLayout(self)
-
         layout.addWidget(QLabel("Name:"))
         self._name = QLineEdit()
         layout.addWidget(self._name)
-
         layout.addWidget(QLabel("Phone number:"))
         self._number = QLineEdit()
         self._number.setPlaceholderText("+1234567890")
         layout.addWidget(self._number)
-
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )

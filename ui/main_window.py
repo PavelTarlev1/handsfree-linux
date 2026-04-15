@@ -7,7 +7,7 @@ import logging
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QRectF, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QShortcut
+from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -34,9 +34,12 @@ class MainWindow(QMainWindow):
     mute_requested       = pyqtSignal(bool)  # True = mute on
 
     # Settings signals
-    audio_output_changed = pyqtSignal(str)   # pactl sink name
-    audio_input_changed  = pyqtSignal(str)   # pactl source name
-    volume_changed       = pyqtSignal(int)   # 0-100
+    audio_output_changed    = pyqtSignal(str)   # pactl sink name
+    audio_input_changed     = pyqtSignal(str)   # pactl source name
+    volume_changed          = pyqtSignal(int)   # 0-100
+    ring_volume_changed     = pyqtSignal(int)   # 0-100
+    mic_sensitivity_changed = pyqtSignal(int)   # 0-100
+    theme_changed           = pyqtSignal(str)   # theme name
 
     def __init__(self, store: ContactStore, parent=None):
         super().__init__(parent)
@@ -63,15 +66,11 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(12, 12, 12, 4)
 
-        # Status bar at top
-        self._status_group = self._build_status_group()
-        main_layout.addWidget(self._status_group)
-
         # Active-call banner (hidden when no call)
         self._call_banner = self._build_call_banner()
         main_layout.addWidget(self._call_banner)
 
-        # Tabs: Contacts | Dial | Call Log
+        # Tabs: Contacts | Dial | Call Log | Settings
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
         main_layout.addWidget(self._tabs)
@@ -92,10 +91,21 @@ class MainWindow(QMainWindow):
         # ── Settings tab ──
         self._tabs.addTab(self._build_settings_tab(), "Settings")
 
-        # Status bar
+        # ── Bottom status bar ──
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
-        self._statusbar.showMessage("Ready")
+
+        # Left side: connection dot + label
+        self._status_dot = QLabel("⚠")
+        self._status_dot.setStyleSheet("color: #f0a500; font-size: 14px;")
+        self._status_label = QLabel("Not connected")
+        self._status_label.setStyleSheet("font-size: 12px;")
+        self._statusbar.addWidget(self._status_dot)
+        self._statusbar.addWidget(self._status_label)
+
+        # Right side: sync widget
+        self._sync_widget = _SyncWidget()
+        self._statusbar.addPermanentWidget(self._sync_widget)
 
         # Floating call overlay (always-on-top, visible even when window minimised)
         from ui.call_overlay import CallOverlay
@@ -107,13 +117,6 @@ class MainWindow(QMainWindow):
         """Red banner shown during an active call — number, timer, End Call button."""
         banner = QWidget()
         banner.setObjectName("callBanner")
-        banner.setStyleSheet("""
-            #callBanner {
-                background: #3a1010;
-                border: 1px solid #ea4335;
-                border-radius: 6px;
-            }
-        """)
         row = QHBoxLayout(banner)
         row.setContentsMargins(12, 8, 12, 8)
         row.setSpacing(12)
@@ -127,14 +130,10 @@ class MainWindow(QMainWindow):
         info_col = QVBoxLayout()
         info_col.setSpacing(2)
         self._call_banner_number = QLabel("Call active")
-        self._call_banner_number.setStyleSheet(
-            "font-size: 14px; font-weight: bold; color: #f28b82; background: transparent;"
-        )
+        self._call_banner_number.setObjectName("callBannerNumber")
         info_col.addWidget(self._call_banner_number)
         self._call_banner_timer = QLabel("0:00")
-        self._call_banner_timer.setStyleSheet(
-            "font-size: 12px; color: #9aa0a6; background: transparent;"
-        )
+        self._call_banner_timer.setObjectName("callBannerTimer")
         info_col.addWidget(self._call_banner_timer)
         row.addLayout(info_col)
 
@@ -173,39 +172,33 @@ class MainWindow(QMainWindow):
         self._incall_timer_lbl.setText(text)
         self._call_overlay.update_timer(text)
 
-    def _build_status_group(self) -> QGroupBox:
-        group = QGroupBox("Connection")
-        layout = QHBoxLayout(group)
+    def _build_device_group(self) -> QGroupBox:
+        """Device connection controls — lives in the Settings tab."""
+        group = QGroupBox("Device")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(8)
 
-        self._status_dot = QLabel("●")
-        self._status_dot.setStyleSheet("color: #888; font-size: 16px;")
-        layout.addWidget(self._status_dot)
-
-        self._status_label = QLabel("Not connected")
-        self._status_label.setStyleSheet("font-size: 13px;")
-        layout.addWidget(self._status_label)
-
-        layout.addStretch()
-
+        row = QHBoxLayout()
         self._device_combo = QComboBox()
         self._device_combo.setMinimumWidth(200)
         self._device_combo.setPlaceholderText("Select device…")
-        layout.addWidget(self._device_combo)
+        row.addWidget(self._device_combo, 1)
 
         self._btn_connect = QPushButton("Connect")
         self._btn_connect.clicked.connect(self._on_connect_clicked)
-        layout.addWidget(self._btn_connect)
+        row.addWidget(self._btn_connect)
 
         self._btn_disconnect = QPushButton("Disconnect")
         self._btn_disconnect.setVisible(False)
         self._btn_disconnect.clicked.connect(self.disconnect_requested)
-        layout.addWidget(self._btn_disconnect)
+        row.addWidget(self._btn_disconnect)
 
         self._btn_sync = QPushButton("Sync Contacts")
         self._btn_sync.setVisible(False)
         self._btn_sync.clicked.connect(self.sync_requested)
-        layout.addWidget(self._btn_sync)
+        row.addWidget(self._btn_sync)
 
+        layout.addLayout(row)
         return group
 
     def _build_dial_tab(self) -> QWidget:
@@ -238,8 +231,8 @@ class MainWindow(QMainWindow):
         input_row.addWidget(self._dial_input)
 
         btn_del = QPushButton("⌫")
+        btn_del.setObjectName("dialDelBtn")
         btn_del.setFixedSize(44, 42)
-        btn_del.setStyleSheet("font-size: 18px; border: none; color: #9aa0a6;")
         btn_del.clicked.connect(self._on_del_digit)
         input_row.addWidget(btn_del)
         layout.addLayout(input_row)
@@ -259,49 +252,30 @@ class MainWindow(QMainWindow):
         for i, (digit, sub) in enumerate(KEYS):
             row, col = divmod(i, 3)
             btn = QPushButton()
+            btn.setObjectName("dialBtn")
             btn.setFixedSize(80, 52)
-            btn.setStyleSheet("""
-                QPushButton {
-                    border: 1px solid #3c4043; border-radius: 6px;
-                    font-size: 20px; font-weight: bold; color: #e8eaed;
-                    background: #2d2d2f;
-                }
-                QPushButton:hover  { background: #3c3c3e; }
-                QPushButton:pressed{ background: #4a4a4c; }
-            """)
             btn_layout = QVBoxLayout(btn)
             btn_layout.setContentsMargins(0, 4, 0, 4)
             btn_layout.setSpacing(0)
             lbl_main = QLabel(digit)
+            lbl_main.setObjectName("dialBtnLabel")
             lbl_main.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl_main.setStyleSheet(
-                "font-size: 20px; font-weight: bold; color: #e8eaed; background: transparent;"
-            )
             btn_layout.addWidget(lbl_main)
             if sub:
                 lbl_sub = QLabel(sub)
+                lbl_sub.setObjectName("dialBtnSub")
                 lbl_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                lbl_sub.setStyleSheet(
-                    "font-size: 9px; color: #9aa0a6; background: transparent;"
-                )
                 btn_layout.addWidget(lbl_sub)
             btn.clicked.connect(self._make_digit_handler(digit))
             pad.addWidget(btn, row, col)
 
         layout.addWidget(numpad, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        btn_call = QPushButton("  Call")
-        btn_call.setFixedHeight(48)
-        btn_call.setStyleSheet("""
-            QPushButton {
-                background: #34a853; color: white; border-radius: 24px;
-                font-size: 16px; font-weight: bold;
-            }
-            QPushButton:hover  { background: #2d9249; }
-            QPushButton:pressed{ background: #1e7a3d; }
-        """)
-        btn_call.clicked.connect(self._on_dial)
-        layout.addWidget(btn_call)
+        self._btn_call = QPushButton("  Call")
+        self._btn_call.setObjectName("callBtn")
+        self._btn_call.setFixedHeight(48)
+        self._btn_call.clicked.connect(self._on_dial)
+        layout.addWidget(self._btn_call)
         layout.addStretch()
         return w
 
@@ -318,7 +292,7 @@ class MainWindow(QMainWindow):
 
     def _build_incall_page(self) -> QWidget:
         w = QWidget()
-        w.setStyleSheet("background: #1c1c1e;")
+        w.setObjectName("incallPage")
         layout = QVBoxLayout(w)
         layout.setContentsMargins(24, 32, 24, 24)
         layout.setSpacing(0)
@@ -326,12 +300,9 @@ class MainWindow(QMainWindow):
 
         # Avatar
         self._incall_avatar = QLabel()
+        self._incall_avatar.setObjectName("incallAvatar")
         self._incall_avatar.setFixedSize(88, 88)
         self._incall_avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._incall_avatar.setStyleSheet(
-            "border-radius: 44px; background: #3c4043; border: 2px solid #5f6368;"
-            "font-size: 32px; font-weight: bold; color: white;"
-        )
         self._incall_avatar.setText("?")
         layout.addWidget(self._incall_avatar, alignment=Qt.AlignmentFlag.AlignHCenter)
 
@@ -339,25 +310,21 @@ class MainWindow(QMainWindow):
 
         # Contact name (large) + number (small, below)
         self._incall_number_lbl = QLabel("")
+        self._incall_number_lbl.setObjectName("incallName")
         self._incall_number_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._incall_number_lbl.setStyleSheet(
-            "font-size: 22px; font-weight: bold; color: #e8eaed; background: transparent;"
-        )
         layout.addWidget(self._incall_number_lbl)
 
-        self._incall_number_sub = QLabel("")   # raw number shown when name is known
+        self._incall_number_sub = QLabel("")
+        self._incall_number_sub.setObjectName("incallSub")
         self._incall_number_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._incall_number_sub.setStyleSheet("font-size: 13px; color: #9aa0a6; background: transparent;")
         layout.addWidget(self._incall_number_sub)
 
         layout.addSpacing(6)
 
         # Duration timer
         self._incall_timer_lbl = QLabel("0:00")
+        self._incall_timer_lbl.setObjectName("incallTimer")
         self._incall_timer_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._incall_timer_lbl.setStyleSheet(
-            "font-size: 16px; color: #9aa0a6; background: transparent;"
-        )
         layout.addWidget(self._incall_timer_lbl)
 
         layout.addSpacing(32)
@@ -367,68 +334,43 @@ class MainWindow(QMainWindow):
         vol_row.setSpacing(10)
 
         btn_vol_dn = QPushButton("−")
+        btn_vol_dn.setObjectName("incallVolBtn")
         btn_vol_dn.setFixedSize(44, 44)
-        btn_vol_dn.setStyleSheet(
-            "QPushButton{font-size:22px;font-weight:bold;"
-            "border-radius:22px;background:#2d2d2f;color:#e8eaed;}"
-            "QPushButton:hover{background:#3c4043;}"
-        )
         btn_vol_dn.clicked.connect(self._on_incall_vol_down)
         vol_row.addWidget(btn_vol_dn)
 
         self._incall_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._incall_vol_slider.setObjectName("incallSlider")
         self._incall_vol_slider.setRange(0, 100)
         self._incall_vol_slider.setValue(80)
-        self._incall_vol_slider.setStyleSheet("""
-            QSlider::groove:horizontal {
-                background: #3c4043; height: 6px; border-radius: 3px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #34a853; height: 6px; border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                background: white; width: 18px; height: 18px;
-                margin: -6px 0; border-radius: 9px;
-            }
-        """)
         self._incall_vol_slider.valueChanged.connect(self._on_incall_vol_slider)
         vol_row.addWidget(self._incall_vol_slider, 1)
 
         btn_vol_up = QPushButton("+")
+        btn_vol_up.setObjectName("incallVolBtn")
         btn_vol_up.setFixedSize(44, 44)
-        btn_vol_up.setStyleSheet(
-            "QPushButton{font-size:22px;font-weight:bold;"
-            "border-radius:22px;background:#2d2d2f;color:#e8eaed;}"
-            "QPushButton:hover{background:#3c4043;}"
-        )
         btn_vol_up.clicked.connect(self._on_incall_vol_up)
         vol_row.addWidget(btn_vol_up)
 
         self._incall_vol_lbl = QLabel("80%")
+        self._incall_vol_lbl.setObjectName("incallVolLbl")
         self._incall_vol_lbl.setFixedWidth(40)
         self._incall_vol_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._incall_vol_lbl.setStyleSheet("color:#9aa0a6; background:transparent;")
         vol_row.addWidget(self._incall_vol_lbl)
 
         layout.addLayout(vol_row)
         layout.addSpacing(20)
 
         # ── Audio device pickers ──────────────────────────────────────────────
-        dev_style = (
-            "QLabel{color:#9aa0a6;font-size:11px;background:transparent;}"
-            "QComboBox{background:#2d2d2f;color:#e8eaed;border:1px solid #5f6368;"
-            "border-radius:6px;padding:4px 8px;font-size:12px;}"
-            "QComboBox::drop-down{border:none;}"
-            "QComboBox QAbstractItemView{background:#2d2d2f;color:#e8eaed;}"
-        )
         dev_widget = QWidget()
-        dev_widget.setStyleSheet(dev_style)
+        dev_widget.setObjectName("incallDevWidget")
         dev_layout = QVBoxLayout(dev_widget)
         dev_layout.setContentsMargins(0, 0, 0, 0)
         dev_layout.setSpacing(6)
 
         out_row = QHBoxLayout()
         out_lbl = QLabel("Speaker:")
+        out_lbl.setObjectName("incallDevLabel")
         out_lbl.setFixedWidth(72)
         out_row.addWidget(out_lbl)
         self._incall_output_combo = QComboBox()
@@ -438,6 +380,7 @@ class MainWindow(QMainWindow):
 
         in_row = QHBoxLayout()
         in_lbl = QLabel("Microphone:")
+        in_lbl.setObjectName("incallDevLabel")
         in_lbl.setFixedWidth(72)
         in_row.addWidget(in_lbl)
         self._incall_input_combo = QComboBox()
@@ -453,27 +396,15 @@ class MainWindow(QMainWindow):
         action_row.setSpacing(14)
 
         self._incall_btn_mute = QPushButton("Mute")
+        self._incall_btn_mute.setObjectName("incallMuteBtn")
         self._incall_btn_mute.setFixedHeight(56)
         self._incall_btn_mute.setCheckable(True)
-        self._incall_btn_mute.setStyleSheet(
-            "QPushButton{background:#2d2d2f;color:#e8eaed;"
-            "border-radius:28px;font-size:16px;border:1px solid #5f6368;}"
-            "QPushButton:hover{background:#3c4043;}"
-            "QPushButton:checked{background:#ea4335;color:white;border:none;}"
-        )
         self._incall_btn_mute.toggled.connect(self._on_incall_mute_toggled)
         action_row.addWidget(self._incall_btn_mute)
 
         btn_end = QPushButton("  End Call")
+        btn_end.setObjectName("incallEndBtn")
         btn_end.setFixedHeight(56)
-        btn_end.setStyleSheet("""
-            QPushButton {
-                background: #ea4335; color: white;
-                border-radius: 28px; font-size: 18px; font-weight: bold;
-            }
-            QPushButton:hover  { background: #c5352a; }
-            QPushButton:pressed{ background: #a02820; }
-        """)
         btn_end.clicked.connect(self.hangup_requested)
         action_row.addWidget(btn_end)
 
@@ -539,9 +470,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
 
         self._calllog_list = QListWidget()
-        self._calllog_list.setStyleSheet(
-            "QListWidget::item { padding: 6px 4px; border-bottom: 1px solid #2d2d2f; }"
-        )
+        self._calllog_list.setObjectName("calllogList")
         self._calllog_list.itemDoubleClicked.connect(self._on_calllog_double_click)
         self._calllog_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._calllog_list.customContextMenuRequested.connect(self._on_calllog_context_menu)
@@ -549,7 +478,7 @@ class MainWindow(QMainWindow):
 
         btn_row = QHBoxLayout()
         lbl = QLabel("Double-click to open profile · Right-click for options")
-        lbl.setStyleSheet("color: #5f6368; font-size: 11px;")
+        lbl.setObjectName("hintLabel")
         btn_row.addWidget(lbl)
         btn_row.addStretch()
         btn_refresh = QPushButton("Refresh")
@@ -614,6 +543,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
 
+        # ── Device group ──────────────────────────────────────────────────────
+        layout.addWidget(self._build_device_group())
+
         # ── Call audio group ──────────────────────────────────────────────────
         audio_group = QGroupBox("Call Audio Device")
         ag_layout = QVBoxLayout(audio_group)
@@ -657,22 +589,25 @@ class MainWindow(QMainWindow):
         mic_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._mic_dial = _LevelDial(label="Microphone")
         mic_col.addWidget(self._mic_dial, alignment=Qt.AlignmentFlag.AlignHCenter)
-        self._btn_test_mic = QPushButton("Test mic")
+        self._btn_test_mic = QPushButton("Record mic")
         self._btn_test_mic.setFixedWidth(110)
-        self._btn_test_mic.setToolTip("Start/stop live microphone level monitor")
-        self._btn_test_mic.setCheckable(True)
-        self._btn_test_mic.clicked.connect(self._toggle_mic_test)
+        self._btn_test_mic.setToolTip("Record 3 seconds of audio and play it back")
+        self._btn_test_mic.clicked.connect(self._start_mic_record)
         mic_col.addWidget(self._btn_test_mic, alignment=Qt.AlignmentFlag.AlignHCenter)
         dials_row.addLayout(mic_col)
 
         dials_row.addStretch()
         ag_layout.addLayout(dials_row)
 
-        # Internal state for mic test
+        # Internal state for mic record/playback test
         self._mic_test_proc = None
         self._mic_test_timer = QTimer()
         self._mic_test_timer.setInterval(60)   # ~16 fps
         self._mic_test_timer.timeout.connect(self._update_mic_level)
+        self._mic_record_buf = bytearray()
+        self._mic_record_timer = QTimer()
+        self._mic_record_timer.setSingleShot(True)
+        self._mic_record_timer.timeout.connect(self._finish_mic_record)
 
         # Internal state for speaker dial animation
         self._spk_anim_timer = QTimer()
@@ -720,9 +655,85 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(vol_group)
 
+        # ── Ring volume group ─────────────────────────────────────────────────
+        ring_group = QGroupBox("Ring Volume")
+        rg_layout = QHBoxLayout(ring_group)
+        rg_layout.setSpacing(8)
+
+        btn_ring_down = QPushButton("−")
+        btn_ring_down.setFixedSize(36, 36)
+        btn_ring_down.setStyleSheet("font-size: 18px; font-weight: bold;")
+        btn_ring_down.clicked.connect(lambda: self._on_ring_volume_button(-5))
+        rg_layout.addWidget(btn_ring_down)
+
+        self._ring_vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._ring_vol_slider.setRange(0, 100)
+        self._ring_vol_slider.setValue(80)
+        self._ring_vol_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._ring_vol_slider.setTickInterval(10)
+        self._ring_vol_slider.valueChanged.connect(self._on_ring_volume_slider)
+        rg_layout.addWidget(self._ring_vol_slider, 1)
+
+        btn_ring_up = QPushButton("+")
+        btn_ring_up.setFixedSize(36, 36)
+        btn_ring_up.setStyleSheet("font-size: 18px; font-weight: bold;")
+        btn_ring_up.clicked.connect(lambda: self._on_ring_volume_button(+5))
+        rg_layout.addWidget(btn_ring_up)
+
+        self._ring_vol_label = QLabel("80%")
+        self._ring_vol_label.setFixedWidth(42)
+        self._ring_vol_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        rg_layout.addWidget(self._ring_vol_label)
+
+        layout.addWidget(ring_group)
+
+        # ── Mic sensitivity group ─────────────────────────────────────────────
+        mic_group = QGroupBox("Microphone Sensitivity")
+        mg_layout = QHBoxLayout(mic_group)
+        mg_layout.setSpacing(8)
+
+        btn_mic_down = QPushButton("−")
+        btn_mic_down.setFixedSize(36, 36)
+        btn_mic_down.setStyleSheet("font-size: 18px; font-weight: bold;")
+        btn_mic_down.clicked.connect(lambda: self._on_mic_sensitivity_button(-5))
+        mg_layout.addWidget(btn_mic_down)
+
+        self._mic_sens_slider = QSlider(Qt.Orientation.Horizontal)
+        self._mic_sens_slider.setRange(0, 150)   # allow boost up to 150 %
+        self._mic_sens_slider.setValue(80)
+        self._mic_sens_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self._mic_sens_slider.setTickInterval(10)
+        self._mic_sens_slider.valueChanged.connect(self._on_mic_sensitivity_slider)
+        mg_layout.addWidget(self._mic_sens_slider, 1)
+
+        btn_mic_up = QPushButton("+")
+        btn_mic_up.setFixedSize(36, 36)
+        btn_mic_up.setStyleSheet("font-size: 18px; font-weight: bold;")
+        btn_mic_up.clicked.connect(lambda: self._on_mic_sensitivity_button(+5))
+        mg_layout.addWidget(btn_mic_up)
+
+        self._mic_sens_label = QLabel("80%")
+        self._mic_sens_label.setFixedWidth(42)
+        self._mic_sens_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        mg_layout.addWidget(self._mic_sens_label)
+
+        layout.addWidget(mic_group)
+
+        # ── Theme group ───────────────────────────────────────────────────────
+        theme_group = QGroupBox("Appearance")
+        tg_layout = QHBoxLayout(theme_group)
+        tg_layout.addWidget(QLabel("Theme:"))
+        self._theme_combo = QComboBox()
+        from ui.themes import ALL as _ALL_THEMES
+        for t in _ALL_THEMES:
+            self._theme_combo.addItem(t.name)
+        self._theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
+        tg_layout.addWidget(self._theme_combo, 1)
+        layout.addWidget(theme_group)
+
         # ── Config file hint ──────────────────────────────────────────────────
         hint = QLabel("Advanced settings: ~/.config/handsfree/config.toml")
-        hint.setStyleSheet("color: #5f6368; font-size: 11px;")
+        hint.setObjectName("hintLabel")
         layout.addWidget(hint)
 
         layout.addStretch()
@@ -800,7 +811,8 @@ class MainWindow(QMainWindow):
         for combo in out_combos + in_combos:
             combo.blockSignals(False)
 
-    def set_audio_selection(self, output_name: str, input_name: str, volume: int):
+    def set_audio_selection(self, output_name: str, input_name: str, volume: int,
+                            ring_volume: int = 80, mic_sensitivity: int = 80):
         """Called by HandsFreeApp to restore saved settings into the UI."""
         # Ensure devices are loaded first
         if not self._audio_devices_loaded:
@@ -816,10 +828,15 @@ class MainWindow(QMainWindow):
                     break
             combo.blockSignals(False)
 
-        self._vol_slider.blockSignals(True)
-        self._vol_slider.setValue(volume)
-        self._vol_label.setText(f"{volume}%")
-        self._vol_slider.blockSignals(False)
+        for slider, label, value in (
+            (self._vol_slider,      self._vol_label,      volume),
+            (self._ring_vol_slider, self._ring_vol_label, ring_volume),
+            (self._mic_sens_slider, self._mic_sens_label, mic_sensitivity),
+        ):
+            slider.blockSignals(True)
+            slider.setValue(value)
+            label.setText(f"{value}%")
+            slider.blockSignals(False)
 
     def _on_audio_output_changed(self, _index: int):
         name = self._audio_output_combo.currentData() or ""
@@ -842,6 +859,26 @@ class MainWindow(QMainWindow):
 
     def _on_settings_vol_up(self, checked: bool = False):
         self._on_volume_button(+5)
+
+    def _on_ring_volume_slider(self, value: int):
+        self._ring_vol_label.setText(f"{value}%")
+        self.ring_volume_changed.emit(value)
+
+    def _on_ring_volume_button(self, delta: int):
+        new_val = max(0, min(100, self._ring_vol_slider.value() + delta))
+        self._ring_vol_slider.setValue(new_val)
+
+    def _on_mic_sensitivity_slider(self, value: int):
+        self._mic_sens_label.setText(f"{value}%")
+        self.mic_sensitivity_changed.emit(value)
+
+    def _on_mic_sensitivity_button(self, delta: int):
+        new_val = max(0, min(150, self._mic_sens_slider.value() + delta))
+        self._mic_sens_slider.setValue(new_val)
+
+    def _on_theme_combo_changed(self, name: str):
+        self.apply_theme(name)
+        self.theme_changed.emit(name)
 
     # ── Audio tests ───────────────────────────────────────────────────────────
 
@@ -905,15 +942,11 @@ class MainWindow(QMainWindow):
         self._btn_test_spk.setText("Test speaker")
         self._btn_test_spk.setEnabled(True)
 
-    def _toggle_mic_test(self, checked: bool):
-        if checked:
-            self._start_mic_test()
-        else:
-            self._stop_mic_test()
-
-    def _start_mic_test(self):
+    def _start_mic_record(self):
+        """Record 3 seconds from the selected mic input, then play it back."""
         import subprocess
         source = self._audio_input_combo.currentData() or ""
+        self._mic_record_buf.clear()
         cmd = [
             "pacat", "--record", "--raw",
             "--format=s16le", "--rate=16000", "--channels=1",
@@ -925,30 +958,18 @@ class MainWindow(QMainWindow):
             self._mic_test_proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
             )
-            self._btn_test_mic.setText("Stop")
+            self._btn_test_mic.setEnabled(False)
+            self._btn_test_mic.setText("Recording…")
             self._mic_test_timer.start()
+            self._mic_record_timer.start(3000)   # record for 3 seconds
         except Exception as e:
-            logger.warning("Mic test start failed: %s", e)
-            self._btn_test_mic.setChecked(False)
-
-    def _stop_mic_test(self):
-        self._mic_test_timer.stop()
-        if self._mic_test_proc:
-            try:
-                self._mic_test_proc.terminate()
-                self._mic_test_proc.wait(timeout=1)
-            except Exception:
-                pass
-            self._mic_test_proc = None
-        self._mic_dial.set_level(0)
-        self._btn_test_mic.setText("Test mic")
-        self._btn_test_mic.setChecked(False)
+            logger.warning("Mic record start failed: %s", e)
+            self._btn_test_mic.setEnabled(True)
 
     def _update_mic_level(self):
-        """Read a chunk from pacat and drive the mic dial (called by timer)."""
+        """Read a chunk from pacat, drive the dial, and accumulate into the buffer."""
         import math, select, struct
         if not self._mic_test_proc:
-            self._stop_mic_test()
             return
         try:
             ready, _, _ = select.select([self._mic_test_proc.stdout], [], [], 0)
@@ -956,12 +977,11 @@ class MainWindow(QMainWindow):
                 return
             chunk = self._mic_test_proc.stdout.read(640)
             if not chunk:
-                self._stop_mic_test()
                 return
         except Exception:
-            self._stop_mic_test()
             return
 
+        self._mic_record_buf.extend(chunk)
         n = len(chunk) // 2
         if n == 0:
             return
@@ -970,11 +990,65 @@ class MainWindow(QMainWindow):
         level = 0 if rms < 1 else int(min(100, 20 * math.log10(rms / 32767.0) + 100))
         self._mic_dial.set_level(level)
 
+    def _finish_mic_record(self):
+        """Stop recording and play back the captured audio."""
+        import subprocess, threading
+        self._mic_test_timer.stop()
+        if self._mic_test_proc:
+            try:
+                self._mic_test_proc.terminate()
+                # Drain any bytes still in the pipe before the process fully exits
+                remaining = self._mic_test_proc.stdout.read()
+                if remaining:
+                    self._mic_record_buf.extend(remaining)
+                self._mic_test_proc.wait(timeout=1)
+            except Exception:
+                pass
+            self._mic_test_proc = None
+        self._mic_dial.set_level(0)
+
+        pcm = bytes(self._mic_record_buf)
+        self._mic_record_buf.clear()
+
+        if not pcm:
+            self._btn_test_mic.setText("Record mic")
+            self._btn_test_mic.setEnabled(True)
+            return
+
+        sink = self._audio_output_combo.currentData() or ""
+        vol  = self._vol_slider.value()
+        cmd = [
+            "pacat", "--playback", "--raw",
+            "--format=s16le", "--rate=16000", "--channels=1",
+            f"--volume={int(vol * 655.35)}",
+        ]
+        if sink:
+            cmd.append(f"--device={sink}")
+
+        self._btn_test_mic.setText("Playing…")
+
+        def _play():
+            try:
+                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+                proc.communicate(input=pcm, timeout=10)
+            except Exception as e:
+                logger.debug("Mic playback error: %s", e)
+            finally:
+                QTimer.singleShot(0, self._finish_mic_playback)
+
+        threading.Thread(target=_play, daemon=True).start()
+
+    def _finish_mic_playback(self):
+        self._mic_dial.set_level(0)
+        self._btn_test_mic.setText("Record mic")
+        self._btn_test_mic.setEnabled(True)
+
     # ── Public update methods (call from app.py via Qt signals) ───────────────
 
     @pyqtSlot(str)
     def on_connected(self, device_name: str):
-        self._status_dot.setStyleSheet("color: #34a853; font-size: 16px;")
+        self._status_dot.setText("●")
+        self._status_dot.setStyleSheet("color: #34a853; font-size: 14px;")
         self._status_label.setText(f"Connected: {device_name}")
         self._btn_connect.setVisible(False)
         self._btn_disconnect.setVisible(True)
@@ -983,11 +1057,21 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def on_disconnected(self):
-        self._status_dot.setStyleSheet("color: #888; font-size: 16px;")
+        self._status_dot.setText("⚠")
+        self._status_dot.setStyleSheet("color: #f0a500; font-size: 14px;")
         self._status_label.setText("Not connected")
         self._btn_connect.setVisible(True)
         self._btn_disconnect.setVisible(False)
         self._btn_sync.setVisible(False)
+        self._sync_widget.set_idle()
+
+    @pyqtSlot()
+    def on_sync_started(self):
+        self._sync_widget.set_syncing()
+
+    @pyqtSlot(int, int)
+    def on_sync_done(self, _updated: int, total: int):
+        self._sync_widget.set_synced(total)
 
     @pyqtSlot(str)
     # ── In-call contact helpers ───────────────────────────────────────────────
@@ -1020,18 +1104,13 @@ class MainWindow(QMainWindow):
                                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                                Qt.TransformationMode.SmoothTransformation)
                 self._incall_avatar.setPixmap(px.copy(0, 0, _SZ, _SZ))
-                self._incall_avatar.setStyleSheet(
-                    "border-radius: 44px; background: #3c4043; border: 2px solid #5f6368;"
-                )
+                self._incall_avatar.setObjectName("incallAvatar")
                 return name, photo_bytes
 
         words = name.split()
         initials = (words[0][0] + words[-1][0]).upper() if len(words) >= 2 else name[:2].upper() or "?"
         self._incall_avatar.setText(initials)
-        self._incall_avatar.setStyleSheet(
-            "border-radius: 44px; background: #3c4043; border: 2px solid #5f6368;"
-            "font-size: 28px; font-weight: bold; color: white;"
-        )
+        self._incall_avatar.setObjectName("incallAvatar")
         return name, photo_bytes
 
     def on_dialling(self, number: str):
@@ -1161,49 +1240,167 @@ class MainWindow(QMainWindow):
     # ── Style ─────────────────────────────────────────────────────────────────
 
     def _apply_style(self):
+        from ui.themes import VSCODE_DARK
+        self._current_theme = VSCODE_DARK
+        self._apply_theme_qss(VSCODE_DARK)
 
-        self.setStyleSheet("""
-            QMainWindow, QWidget {
-                background: #1c1c1e;
-                color: #e8eaed;
+    def apply_theme(self, name: str):
+        """Public — called by app.py on startup and when the user picks a theme."""
+        from ui.themes import get
+        t = get(name)
+        self._current_theme = t
+        self._apply_theme_qss(t)
+        self._refresh_inline_styles(t)
+        # Sync combo without re-triggering signal
+        if hasattr(self, "_theme_combo"):
+            self._theme_combo.blockSignals(True)
+            idx = self._theme_combo.findText(name)
+            if idx >= 0:
+                self._theme_combo.setCurrentIndex(idx)
+            self._theme_combo.blockSignals(False)
+        # Repaint custom widgets
+        if hasattr(self, "_spk_dial"):
+            self._spk_dial.set_theme(t.dial_bg, t.dial_track)
+        if hasattr(self, "_mic_dial"):
+            self._mic_dial.set_theme(t.dial_bg, t.dial_track)
+        if hasattr(self, "_sync_widget"):
+            self._sync_widget.set_accent(t.accent_blue)
+
+    def _refresh_inline_styles(self, t):
+        """Re-apply the handful of styles that can't live in the global QSS."""
+        # Status label colour follows the theme; dot colours are fixed (green / amber)
+        self._status_label.setStyleSheet(f"font-size: 12px; color: {t.fg};")
+
+    def _apply_theme_qss(self, t):
+        self.setStyleSheet(f"""
+            QMainWindow, QWidget {{
+                background: {t.bg};
+                color: {t.fg};
                 font-family: "Segoe UI", "Ubuntu", sans-serif;
                 font-size: 13px;
-            }
-            QGroupBox {
-                border: 1px solid #3c4043;
+            }}
+            QGroupBox {{
+                border: 1px solid {t.border};
                 border-radius: 6px;
                 margin-top: 8px;
                 padding: 4px;
-            }
-            QGroupBox::title { color: #9aa0a6; padding: 0 4px; }
-            QTabWidget::pane { border: 1px solid #3c4043; border-radius: 4px; }
-            QTabBar::tab {
-                background: #2d2d2f; color: #9aa0a6;
+            }}
+            QGroupBox::title {{ color: {t.fg_dim}; padding: 0 4px; }}
+            QTabWidget::pane {{ border: 1px solid {t.border}; border-radius: 4px; }}
+            QTabBar::tab {{
+                background: {t.tab_bg}; color: {t.fg_dim};
                 padding: 6px 16px; border-radius: 4px 4px 0 0;
-            }
-            QTabBar::tab:selected { background: #1c1c1e; color: #e8eaed; }
-            QListWidget {
-                background: #2d2d2f; border: 1px solid #3c4043;
+            }}
+            QTabBar::tab:selected {{ background: {t.tab_selected}; color: {t.fg}; }}
+            QListWidget {{
+                background: {t.bg2}; border: 1px solid {t.border};
                 border-radius: 4px;
-            }
-            QListWidget::item:selected { background: #3c4043; }
-            QLineEdit {
-                background: #2d2d2f; color: #e8eaed;
-                border: 1px solid #3c4043; border-radius: 4px;
+            }}
+            QListWidget::item:selected {{ background: {t.bg3}; }}
+            #calllogList::item {{ padding: 6px 4px; border-bottom: 1px solid {t.bg2}; }}
+            QLineEdit {{
+                background: {t.bg2}; color: {t.fg};
+                border: 1px solid {t.border}; border-radius: 4px;
                 padding: 4px 8px;
-            }
-            QPushButton {
-                background: #3c4043; color: #e8eaed;
+            }}
+            QPushButton {{
+                background: {t.btn_bg}; color: {t.fg};
                 border: none; border-radius: 4px; padding: 6px 14px;
-            }
-            QPushButton:hover { background: #4a4d50; }
-            QPushButton:pressed { background: #5a5d60; }
-            QComboBox {
-                background: #2d2d2f; color: #e8eaed;
-                border: 1px solid #3c4043; border-radius: 4px;
+            }}
+            QPushButton:hover    {{ background: {t.btn_hover}; }}
+            QPushButton:pressed  {{ background: {t.btn_pressed}; }}
+            QPushButton:disabled {{ background: {t.bg2}; color: {t.fg_dim}; }}
+            QComboBox {{
+                background: {t.bg2}; color: {t.fg};
+                border: 1px solid {t.border}; border-radius: 4px;
                 padding: 4px 8px;
-            }
-            QStatusBar { color: #9aa0a6; }
+            }}
+            QComboBox QAbstractItemView {{
+                background: {t.bg2}; color: {t.fg};
+                selection-background-color: {t.bg3};
+            }}
+            QSlider::groove:horizontal {{
+                background: {t.bg3}; height: 6px; border-radius: 3px;
+            }}
+            QSlider::sub-page:horizontal {{
+                background: {t.accent_green}; height: 6px; border-radius: 3px;
+            }}
+            QSlider::handle:horizontal {{
+                background: {t.fg}; width: 18px; height: 18px;
+                margin: -6px 0; border-radius: 9px;
+            }}
+            QStatusBar {{ color: {t.statusbar_fg}; background: {t.bg}; }}
+            /* ── Call banner ── */
+            #callBanner {{
+                background: {t.bg_banner};
+                border: 1px solid #ea4335;
+                border-radius: 6px;
+            }}
+            #callBannerNumber {{
+                font-size: 14px; font-weight: bold;
+                color: {t.fg_banner}; background: transparent;
+            }}
+            #callBannerTimer {{
+                font-size: 12px; color: {t.fg_dim}; background: transparent;
+            }}
+            /* ── Dial pad ── */
+            #dialBtn {{
+                border: 1px solid {t.border}; border-radius: 6px;
+                background: {t.bg2};
+            }}
+            #dialBtn:hover   {{ background: {t.bg3}; }}
+            #dialBtn:pressed {{ background: {t.btn_hover}; }}
+            #dialBtnLabel {{
+                font-size: 20px; font-weight: bold;
+                color: {t.fg}; background: transparent;
+            }}
+            #dialBtnSub {{
+                font-size: 9px; color: {t.fg_dim}; background: transparent;
+            }}
+            #dialDelBtn {{
+                font-size: 18px; border: none; background: transparent; color: {t.fg_dim};
+            }}
+            #callBtn {{
+                background: {t.accent_green}; color: white;
+                border-radius: 24px; font-size: 16px; font-weight: bold;
+            }}
+            #callBtn:hover   {{ background: {t.accent_green}cc; }}
+            /* ── In-call page ── */
+            #incallPage {{ background: {t.bg}; }}
+            #incallAvatar {{
+                border-radius: 44px; background: {t.bg3};
+                border: 2px solid {t.border};
+                font-size: 32px; font-weight: bold; color: {t.fg};
+            }}
+            #incallName {{
+                font-size: 22px; font-weight: bold;
+                color: {t.fg}; background: transparent;
+            }}
+            #incallSub  {{ font-size: 13px; color: {t.fg_dim}; background: transparent; }}
+            #incallTimer {{ font-size: 16px; color: {t.fg_dim}; background: transparent; }}
+            #incallVolBtn {{
+                font-size: 22px; font-weight: bold;
+                border-radius: 22px; background: {t.bg2}; color: {t.fg};
+            }}
+            #incallVolBtn:hover {{ background: {t.bg3}; }}
+            #incallVolLbl {{ color: {t.fg_dim}; background: transparent; }}
+            #incallDevLabel {{ color: {t.fg_dim}; font-size: 11px; background: transparent; }}
+            #incallMuteBtn {{
+                background: {t.bg2}; color: {t.fg};
+                border-radius: 28px; font-size: 16px; border: 1px solid {t.border};
+            }}
+            #incallMuteBtn:hover   {{ background: {t.bg3}; }}
+            #incallMuteBtn:checked {{
+                background: #ea4335; color: white; border: none;
+            }}
+            #incallEndBtn {{
+                background: #ea4335; color: white;
+                border-radius: 28px; font-size: 18px; font-weight: bold;
+            }}
+            #incallEndBtn:hover   {{ background: #c5352a; }}
+            #incallEndBtn:pressed {{ background: #a02820; }}
+            /* ── Misc ── */
+            #hintLabel {{ color: {t.fg_dim}; font-size: 11px; }}
         """)
 
 
@@ -1223,8 +1420,10 @@ class _LevelDial(QWidget):
 
     def __init__(self, label: str = "", parent=None):
         super().__init__(parent)
-        self._level  = 0       # 0-100
-        self._label  = label
+        self._level     = 0       # 0-100
+        self._label     = label
+        self._bg_color  = "#2d2d2f"
+        self._trk_color = "#3c4043"
         self.setFixedSize(self.SIZE, self.SIZE + 18)  # +18 for label below
 
     def set_level(self, level: int):
@@ -1232,6 +1431,11 @@ class _LevelDial(QWidget):
         if level != self._level:
             self._level = level
             self.update()
+
+    def set_theme(self, bg_color: str, track_color: str):
+        self._bg_color  = bg_color
+        self._trk_color = track_color
+        self.update()
 
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -1242,7 +1446,7 @@ class _LevelDial(QWidget):
 
         # ── Background circle ─────────────────────────────────────────────────
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor("#2d2d2f"))
+        p.setBrush(QColor(self._bg_color))
         p.drawEllipse(cx - r - 4, cy - r - 4, (r + 4) * 2, (r + 4) * 2)
 
         # ── Track arc (full sweep, dark) ──────────────────────────────────────
@@ -1250,7 +1454,7 @@ class _LevelDial(QWidget):
         START_ANGLE = 225    # degrees (7 o'clock), Qt units = degrees * 16
         SWEEP       = 270    # total sweep degrees
 
-        track_pen = QPen(QColor("#3c4043"), 8, Qt.PenStyle.SolidLine,
+        track_pen = QPen(QColor(self._trk_color), 8, Qt.PenStyle.SolidLine,
                          Qt.PenCapStyle.RoundCap)
         p.setPen(track_pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1304,3 +1508,139 @@ class _LevelDial(QWidget):
                        self._label)
 
         p.end()
+
+
+class _SyncWidget(QWidget):
+    """
+    VS Code-style sync indicator shown in the status bar.
+
+    States:
+      idle    — hidden (no text, no icon)
+      syncing — spinning two-arrow circle + "Syncing…"
+      synced  — static two-arrow circle + "Synced  N"
+    """
+
+    _ICON = 16   # icon square size in px
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._state   = "idle"   # "idle" | "syncing" | "synced"
+        self._count   = 0
+        self._angle   = 0        # rotation angle for spin animation
+        self._accent  = "#8ab4f8"
+
+        self._spin_timer = QTimer(self)
+        self._spin_timer.setInterval(30)   # ~33 fps
+        self._spin_timer.timeout.connect(self._tick)
+
+        self.setVisible(False)
+        self._update_size()
+
+    def set_accent(self, color: str):
+        self._accent = color
+        self.update()
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def set_idle(self):
+        self._spin_timer.stop()
+        self._state = "idle"
+        self.setVisible(False)
+
+    def set_syncing(self):
+        self._state = "syncing"
+        self._angle = 0
+        self.setVisible(True)
+        self._update_size()
+        self._spin_timer.start()
+
+    def set_synced(self, total: int):
+        self._spin_timer.stop()
+        self._state  = "synced"
+        self._count  = total
+        self._angle  = 0
+        self.setVisible(True)
+        self._update_size()
+        self.update()
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _tick(self):
+        self._angle = (self._angle + 6) % 360
+        self.update()
+
+    def _label_text(self) -> str:
+        if self._state == "syncing":
+            return " Syncing…"
+        if self._state == "synced":
+            return f" Synced  {self._count}"
+        return ""
+
+    def _update_size(self):
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance(self._label_text())
+        self.setFixedSize(self._ICON + text_w + 6, 20)
+
+    def paintEvent(self, _event):
+        import math
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        cx = self._ICON // 2
+        cy = self.height() // 2
+        r  = self._ICON // 2 - 2
+
+        # Rotate around icon centre for spin effect
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(self._angle if self._state == "syncing" else 0)
+        p.translate(-cx, -cy)
+
+        color = QColor(self._accent)
+        pen   = QPen(color, 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        rect = QRectF(cx - r, cy - r, r * 2, r * 2)
+
+        # Top arc (↻ upper half) — 30° gap at bottom
+        p.drawArc(rect, int(20 * 16), int(140 * 16))
+        # Arrowhead at end of top arc
+        end_rad = math.radians(20)
+        ax = cx + r * math.cos(end_rad)
+        ay = cy - r * math.sin(end_rad)
+        self._draw_arrowhead(p, ax, ay, math.radians(20 - 90), r * 0.45)
+
+        # Bottom arc (↻ lower half)
+        p.drawArc(rect, int(200 * 16), int(140 * 16))
+        end_rad2 = math.radians(200)
+        ax2 = cx + r * math.cos(end_rad2)
+        ay2 = cy - r * math.sin(end_rad2)
+        self._draw_arrowhead(p, ax2, ay2, math.radians(200 - 90), r * 0.45)
+
+        p.restore()
+
+        # Label text
+        text = self._label_text()
+        if text:
+            p.setPen(QColor("#9aa0a6"))
+            font = self.font()
+            font.setPointSize(9)
+            p.setFont(font)
+            p.drawText(self._ICON, 0, self.width() - self._ICON, self.height(),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       text)
+        p.end()
+
+    @staticmethod
+    def _draw_arrowhead(p: QPainter, tip_x: float, tip_y: float,
+                        angle_rad: float, size: float):
+        import math
+        spread = math.radians(28)
+        for side in (-spread, spread):
+            a = angle_rad + math.pi + side
+            p.drawLine(
+                int(tip_x), int(tip_y),
+                int(tip_x + size * math.cos(a)),
+                int(tip_y - size * math.sin(a)),
+            )

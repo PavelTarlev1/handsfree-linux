@@ -42,6 +42,7 @@ class _Bridge(QObject):
     sig_codec = pyqtSignal(int)             # codec (1=CVSD, 2=mSBC)
     sig_voip_started = pyqtSignal()
     sig_voip_ended = pyqtSignal()
+    sig_sync_started = pyqtSignal()
     sig_sync_done = pyqtSignal(int)         # number of contacts synced
     sig_devices_ready = pyqtSignal(object)  # list[dict] of paired devices
     sig_dial_error = pyqtSignal()
@@ -77,6 +78,7 @@ class HandsFreeApp(QObject):
         self._init_ui()
         self._connect_bridge_signals()
         self._apply_saved_audio_settings()
+        self._window.apply_theme(self._cfg.ui.theme)
 
     def start(self):
         """Called after Qt app is set up. Starts all background services."""
@@ -108,6 +110,9 @@ class HandsFreeApp(QObject):
         self._window.audio_output_changed.connect(self._on_audio_output_changed)
         self._window.audio_input_changed.connect(self._on_audio_input_changed)
         self._window.volume_changed.connect(self._on_volume_changed)
+        self._window.ring_volume_changed.connect(self._on_ring_volume_changed)
+        self._window.mic_sensitivity_changed.connect(self._on_mic_sensitivity_changed)
+        self._window.theme_changed.connect(self._on_theme_changed)
         self._window.hangup_requested.connect(self._on_hangup)
         self._window.mute_requested.connect(self._on_mute_requested)
 
@@ -138,6 +143,7 @@ class HandsFreeApp(QObject):
         b.sig_codec.connect(self._on_codec_negotiated)
         b.sig_voip_started.connect(self._on_voip_started)
         b.sig_voip_ended.connect(self._on_voip_ended)
+        b.sig_sync_started.connect(self._window.on_sync_started)
         b.sig_sync_done.connect(self._on_sync_done)
         b.sig_devices_ready.connect(self._window.set_devices)
         b.sig_dial_error.connect(self._on_dial_error)
@@ -368,6 +374,16 @@ class HandsFreeApp(QObject):
         self._tray.set_in_call(self._ring_number)
         self._window.on_call_active(self._ring_number)
         self._audio.on_call_started(self._active_codec)
+        # Apply saved mic sensitivity
+        src = self._cfg.audio.call_input_device or "@DEFAULT_SOURCE@"
+        import subprocess as _sp
+        try:
+            _sp.run(
+                ["pactl", "set-source-volume", src, f"{self._cfg.audio.mic_sensitivity}%"],
+                check=False, timeout=5, capture_output=True,
+            )
+        except Exception:
+            pass
 
     @pyqtSlot()
     def _on_call_ended(self):
@@ -430,6 +446,49 @@ class HandsFreeApp(QObject):
         self._audio.set_call_volume(pct)
         self._save_audio_config()
 
+    @pyqtSlot(int)
+    def _on_ring_volume_changed(self, pct: int):
+        self._cfg.audio.ring_volume = pct
+        self._ringer.set_volume(pct)
+        self._save_audio_config()
+
+    @pyqtSlot(int)
+    def _on_mic_sensitivity_changed(self, pct: int):
+        self._cfg.audio.mic_sensitivity = pct
+        # Apply immediately if a call is active
+        src = self._cfg.audio.call_input_device or "@DEFAULT_SOURCE@"
+        import subprocess
+        try:
+            subprocess.run(
+                ["pactl", "set-source-volume", src, f"{pct}%"],
+                check=False, timeout=5, capture_output=True,
+            )
+        except Exception:
+            pass
+        self._save_audio_config()
+
+    @pyqtSlot(str)
+    def _on_theme_changed(self, name: str):
+        self._cfg.ui.theme = name
+        self._save_ui_config()
+
+    def _save_ui_config(self):
+        from core.config import CONFIG_FILE
+        import re
+        try:
+            text = CONFIG_FILE.read_text()
+            def _rep(t, key, value):
+                quoted = isinstance(value, str)
+                new_line = f'{key} = "{value}"' if quoted else f'{key} = {value}'
+                pattern = rf'^{re.escape(key)}\s*=.*$'
+                if re.search(pattern, t, re.MULTILINE):
+                    return re.sub(pattern, new_line, t, flags=re.MULTILINE)
+                return re.sub(r'(\[ui\][^\[]*)', rf'\1{new_line}\n', t, count=1)
+            text = _rep(text, "theme", self._cfg.ui.theme)
+            CONFIG_FILE.write_text(text)
+        except Exception as e:
+            logger.warning("Could not save ui config: %s", e)
+
     def _apply_saved_audio_settings(self):
         """Push config values into AudioManager and the Settings UI dropdowns."""
         self._audio.set_call_devices(
@@ -437,11 +496,14 @@ class HandsFreeApp(QObject):
             self._cfg.audio.call_input_device,
         )
         self._audio.set_call_volume(self._cfg.audio.call_volume)
+        self._ringer.set_volume(self._cfg.audio.ring_volume)
         # Populate the Settings dropdowns (loads device list from pactl)
         self._window.set_audio_selection(
             self._cfg.audio.call_output_device,
             self._cfg.audio.call_input_device,
             self._cfg.audio.call_volume,
+            ring_volume=self._cfg.audio.ring_volume,
+            mic_sensitivity=self._cfg.audio.mic_sensitivity,
         )
 
     def _save_audio_config(self):
@@ -449,7 +511,6 @@ class HandsFreeApp(QObject):
         from core.config import CONFIG_FILE
         try:
             text = CONFIG_FILE.read_text()
-            # Update call_output_device, call_input_device, call_volume lines
             import re
             def _replace_or_append(t, key, value):
                 quoted = isinstance(value, str)
@@ -463,6 +524,8 @@ class HandsFreeApp(QObject):
             text = _replace_or_append(text, "call_output_device", self._cfg.audio.call_output_device)
             text = _replace_or_append(text, "call_input_device",  self._cfg.audio.call_input_device)
             text = _replace_or_append(text, "call_volume",        self._cfg.audio.call_volume)
+            text = _replace_or_append(text, "ring_volume",        self._cfg.audio.ring_volume)
+            text = _replace_or_append(text, "mic_sensitivity",    self._cfg.audio.mic_sensitivity)
             CONFIG_FILE.write_text(text)
         except Exception as e:
             logger.warning("Could not save audio config: %s", e)
@@ -484,6 +547,8 @@ class HandsFreeApp(QObject):
         self._contacts_refreshed = True
         self._window._contacts_widget.refresh()
         self._window.refresh_call_log()
+        total = self._store.count()
+        self._window.on_sync_done(count, total)
         self._tray.show_notification(
             "Sync complete",
             f"{count} contact{'s' if count != 1 else ''} updated from phone",
@@ -675,6 +740,7 @@ class HandsFreeApp(QObject):
             logger.debug("PBAP sync already in progress — skipping")
             return
         try:
+            self._bridge.sig_sync_started.emit()
             # Small delay so the HFP SLC can fully settle before PBAP starts
             time.sleep(2)
 

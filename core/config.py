@@ -34,6 +34,8 @@ class AudioConfig:
     call_output_device: str = ""   # sink  — what the user hears
     call_input_device:  str = ""   # source — user's microphone
     call_volume: int = 80          # 0-100 %
+    ring_volume: int = 80          # 0-100 %
+    mic_sensitivity: int = 80      # 0-100 % — pactl source volume during calls
 
 
 @dataclass
@@ -62,6 +64,7 @@ class DialConfig:
 class UIConfig:
     show_main_window_on_start: bool = False
     call_popup_timeout_seconds: int = 30
+    theme: str = "VS Code Dark"
 
 
 @dataclass
@@ -111,6 +114,8 @@ class Config:
         self.audio.call_output_device = au.get("call_output_device", self.audio.call_output_device)
         self.audio.call_input_device  = au.get("call_input_device",  self.audio.call_input_device)
         self.audio.call_volume        = au.get("call_volume",        self.audio.call_volume)
+        self.audio.ring_volume        = au.get("ring_volume",        self.audio.ring_volume)
+        self.audio.mic_sensitivity    = au.get("mic_sensitivity",    self.audio.mic_sensitivity)
 
         pb = data.get("pbap", {})
         self.pbap.sync_on_connect = pb.get("sync_on_connect", self.pbap.sync_on_connect)
@@ -128,6 +133,7 @@ class Config:
         ui = data.get("ui", {})
         self.ui.show_main_window_on_start = ui.get("show_main_window_on_start", self.ui.show_main_window_on_start)
         self.ui.call_popup_timeout_seconds = ui.get("call_popup_timeout_seconds", self.ui.call_popup_timeout_seconds)
+        self.ui.theme = ui.get("theme", self.ui.theme)
 
     def _write_defaults(self):
         """Write a commented default config file for the user to edit."""
@@ -146,6 +152,8 @@ speaker_gain = 10          # 0-15
 call_output_device = ""    # sink  — what you hear during a call
 call_input_device  = ""    # source — your microphone during a call
 call_volume = 80           # 0-100 %
+ring_volume = 80           # 0-100 %
+mic_sensitivity = 80       # 0-100 % (150 = +50 % boost)
 
 [pbap]
 sync_on_connect = true
