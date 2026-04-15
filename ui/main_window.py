@@ -64,10 +64,12 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(12, 12, 12, 4)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # Active-call banner (hidden when no call)
+        # Active-call banner (hidden until a call is active)
         self._call_banner = self._build_call_banner()
+        self._call_banner.setVisible(False)
         main_layout.addWidget(self._call_banner)
 
         # Tabs: Contacts | Dial | Call Log | Settings
@@ -1286,12 +1288,38 @@ class MainWindow(QMainWindow):
                 padding: 4px;
             }}
             QGroupBox::title {{ color: {t.fg_dim}; padding: 0 4px; }}
-            QTabWidget::pane {{ border: 1px solid {t.border}; border-radius: 4px; }}
-            QTabBar::tab {{
-                background: {t.tab_bg}; color: {t.fg_dim};
-                padding: 6px 16px; border-radius: 4px 4px 0 0;
+            QTabWidget {{
+                background: {t.bg};
             }}
-            QTabBar::tab:selected {{ background: {t.tab_selected}; color: {t.fg}; }}
+            QTabWidget::pane {{
+                border: none;
+                background: {t.bg};
+            }}
+            QTabWidget::tab-bar {{ alignment: left; }}
+            QTabBar {{
+                background: {t.bg};
+                border-bottom: 1px solid {t.border};
+            }}
+            QTabBar QToolButton {{
+                background: {t.bg};
+                border: none;
+            }}
+            QTabBar::tab {{
+                background: {t.bg};
+                color: {t.fg_dim};
+                padding: 8px 18px;
+                border: none;
+                border-bottom: 2px solid transparent;
+                min-width: 60px;
+            }}
+            QTabBar::tab:selected {{
+                color: {t.fg};
+                border-bottom: 2px solid {t.accent_blue};
+            }}
+            QTabBar::tab:hover:!selected {{
+                color: {t.fg};
+                background: {t.bg2};
+            }}
             QListWidget {{
                 background: {t.bg2}; border: 1px solid {t.border};
                 border-radius: 4px;
@@ -1401,6 +1429,42 @@ class MainWindow(QMainWindow):
             #incallEndBtn:pressed {{ background: #a02820; }}
             /* ── Misc ── */
             #hintLabel {{ color: {t.fg_dim}; font-size: 11px; }}
+            /* ── Scrollbars (VS Code style) ── */
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 8px;
+                margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {t.fg_dim};
+                min-height: 24px;
+                border-radius: 4px;
+                opacity: 0.4;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {t.fg};
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{ background: transparent; }}
+            QScrollBar:horizontal {{
+                background: transparent;
+                height: 8px;
+                margin: 0;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {t.fg_dim};
+                min-width: 24px;
+                border-radius: 4px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background: {t.fg};
+            }}
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {{ width: 0; }}
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {{ background: transparent; }}
         """)
 
 
