@@ -34,6 +34,7 @@ class _Bridge(QObject):
     Thin Qt object used to cross thread boundaries safely.
     All signals are declared here; slots execute on the Qt main thread.
     """
+    sig_connecting = pyqtSignal(str)        # device_name being dialled
     sig_connected = pyqtSignal(str, str)    # device_path, device_name
     sig_disconnected = pyqtSignal(str)      # device_path
     sig_ring = pyqtSignal(str)              # caller_number
@@ -136,6 +137,7 @@ class HandsFreeApp(QObject):
         """Wire the cross-thread bridge signals to UI slots."""
         b = self._bridge
         b.sig_connected.connect(self._on_connected)
+        b.sig_connecting.connect(self._window.on_connecting)
         b.sig_disconnected.connect(self._on_disconnected)
         b.sig_ring.connect(self._on_ring)
         b.sig_call_active.connect(self._on_call_active)
@@ -285,9 +287,6 @@ class HandsFreeApp(QObject):
         self._window.on_connected(device_name)
         self._tray.show_notification("HandsFree", f"Connected to {device_name}")
         self._refresh_devices()
-        # Remember this device for future sessions
-        addr = device_path.split("/")[-1].replace("dev_", "").replace("_", ":")
-        self._cfg.remember_device(device_path, addr, device_name)
 
     @pyqtSlot(str)
     def _on_disconnected(self, device_path: str):
@@ -643,6 +642,12 @@ class HandsFreeApp(QObject):
         """User clicked Connect — ask BlueZ to connect to the device."""
         if not self._hfp:
             return
+        # Emit connecting signal with device name for UI feedback
+        name = next(
+            (d["name"] for d in self._hfp.get_paired_devices() if d["path"] == device_path),
+            "device",
+        )
+        self._bridge.sig_connecting.emit(name)
         # Run in a thread — Connect() is slow and blocks until the phone responds.
         threading.Thread(
             target=self._connect_device_thread,
@@ -671,11 +676,19 @@ class HandsFreeApp(QObject):
     def _on_disconnect_requested(self):
         if not self._hfp or not self._current_device_path:
             return
+        path = self._current_device_path
+        threading.Thread(
+            target=self._disconnect_device_thread,
+            args=(path,),
+            daemon=True,
+        ).start()
+
+    def _disconnect_device_thread(self, device_path: str):
         try:
             import dbus
             bus = self._hfp._bus
             device = dbus.Interface(
-                bus.get_object("org.bluez", self._current_device_path),
+                bus.get_object("org.bluez", device_path),
                 "org.bluez.Device1",
             )
             device.Disconnect()
