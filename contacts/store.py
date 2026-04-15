@@ -42,9 +42,6 @@ CREATE TABLE IF NOT EXISTS call_log (
 
 CREATE INDEX IF NOT EXISTS idx_call_log_number
     ON call_log (number);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_call_log_source_uid
-    ON call_log (source_uid) WHERE source_uid IS NOT NULL;
 """
 
 
@@ -68,10 +65,10 @@ class ContactStore:
             log_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(call_log)").fetchall()]
             if "source_uid" not in log_cols:
                 self._conn.execute("ALTER TABLE call_log ADD COLUMN source_uid TEXT")
-                self._conn.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_call_log_source_uid "
-                    "ON call_log (source_uid) WHERE source_uid IS NOT NULL"
-                )
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_call_log_source_uid "
+                "ON call_log (source_uid) WHERE source_uid IS NOT NULL"
+            )
 
     # ── Contacts ──────────────────────────────────────────────────────────────
 
