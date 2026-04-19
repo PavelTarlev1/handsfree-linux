@@ -80,7 +80,7 @@ HandsFree uses PipeWire (via `pactl`) for audio routing. PipeWire is the default
 ```bash
 git clone https://github.com/PavelTarlev1/handsfree-linux.git
 cd handsfree-linux
-pip install -r requirements.txt
+bash scripts/install.sh
 python3 main.py
 ```
 
@@ -118,8 +118,14 @@ Fix: disable WirePlumber's HFP node. See **[docs/wireplumber-setup.md](docs/wire
 
 ```
 main.py                  Entry point
+scripts/
+  install.sh             Install dependencies, icons, desktop entry
+  uninstall.sh           Remove the app
+  release.sh             Bump version, tag, and build release tarball
 core/
   app.py                 Main coordinator — wires all subsystems together
+  version.py             Reads VERSION file
+  updater.py             GitHub release checker and in-place updater
 bluetooth/
   hfp_profile.py         Registers HFP HF profile with BlueZ via D-Bus
   slc.py                 SLC state machine — AT command handshake
@@ -143,6 +149,9 @@ ui/
   call_popup.py          Incoming call popup — Answer / Decline / Silence
   call_overlay.py        Floating always-on-top in-call overlay
   tray.py                System tray icon and menu
+resources/
+  icon.svg               Source icon
+  icon_*.png             App icon at 16/32/48/64/128/256/512px
 ```
 
 ---
