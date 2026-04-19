@@ -1,6 +1,6 @@
 # HandsFree for Linux
 
-Turn your Linux computer into a Bluetooth hands-free kit — like a car speakerphone.  
+A Bluetooth hands-free utility for Linux — adds hands-free calling to your computer, like a car speakerphone kit.  
 Your phone connects via HFP (Hands-Free Profile) and HandsFree handles calls, contacts, and audio routing.
 
 ---
