@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <clipPath id="bg-clip">
+      <rect width="512" height="512" rx="112" ry="112"/>
+    </clipPath>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" ry="112" fill="#1a73e8"/>
+
+  <!-- Handset clipped to the rounded square -->
+  <g clip-path="url(#bg-clip)" fill="white" transform="translate(256,256) rotate(-25) scale(1.15)">
+    <!-- earpiece pill -->
+    <rect x="-40" y="-165" width="80" height="115" rx="40" ry="40"/>
+    <!-- mouthpiece pill -->
+    <rect x="-40" y="55"   width="80" height="115" rx="40" ry="40"/>
+    <!-- spine connecting them -->
+    <path d="M -26,-50 C -80,-20 -80,20 -26,50 L 26,50 C 80,20 80,-20 26,-50 Z"/>
+  </g>
+</svg>

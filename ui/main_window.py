@@ -20,6 +20,24 @@ from contacts.store import ContactStore
 logger = logging.getLogger(__name__)
 
 
+from PyQt6.QtCore import QObject, QEvent
+
+class _NoScrollFilter(QObject):
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            event.ignore()
+            return True
+        return False
+
+_no_scroll = _NoScrollFilter()
+
+
+def _no_wheel(widget):
+    """Prevent a widget from reacting to scroll wheel events."""
+    widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    widget.installEventFilter(_no_scroll)
+
+
 class MainWindow(QMainWindow):
     """
     Main application window.
@@ -49,6 +67,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("HandsFree")
         self.setMinimumSize(520, 580)
         self.resize(640, 680)
+
+        import os
+        from PyQt6.QtGui import QIcon as _QIcon
+        _ico = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "resources", "icon_256.png")
+        if os.path.exists(_ico):
+            self.setWindowIcon(_QIcon(_ico))
         self._apply_style()
         self._build_ui()
 
@@ -105,9 +129,18 @@ class MainWindow(QMainWindow):
         self._statusbar.addWidget(self._status_dot)
         self._statusbar.addWidget(self._status_label)
 
-        # Right side: sync widget
+        # Right side: sync widget + update badge
         self._sync_widget = _SyncWidget()
         self._statusbar.addPermanentWidget(self._sync_widget)
+
+        self._update_badge = _UpdateBadge()
+        self._update_badge.clicked.connect(self._on_update_badge_clicked)
+        self._statusbar.addPermanentWidget(self._update_badge)
+        QTimer.singleShot(5000, self._silent_update_check)
+        self._update_check_timer = QTimer(self)
+        self._update_check_timer.setInterval(4 * 60 * 60 * 1000)  # every 4 hours
+        self._update_check_timer.timeout.connect(self._silent_update_check)
+        self._update_check_timer.start()
 
         # Floating call overlay (always-on-top, visible even when window minimised)
         from ui.call_overlay import CallOverlay
@@ -579,6 +612,7 @@ class MainWindow(QMainWindow):
         out_row.addWidget(QLabel("Output (speaker):"))
         self._audio_output_combo = QComboBox()
         self._audio_output_combo.currentIndexChanged.connect(self._on_audio_output_changed)
+        _no_wheel(self._audio_output_combo)
         out_row.addWidget(self._audio_output_combo, 1)
         ag_layout.addLayout(out_row)
 
@@ -587,6 +621,7 @@ class MainWindow(QMainWindow):
         in_row.addWidget(QLabel("Input (microphone):"))
         self._audio_input_combo = QComboBox()
         self._audio_input_combo.currentIndexChanged.connect(self._on_audio_input_changed)
+        _no_wheel(self._audio_input_combo)
         in_row.addWidget(self._audio_input_combo, 1)
         ag_layout.addLayout(in_row)
 
@@ -599,6 +634,7 @@ class MainWindow(QMainWindow):
         spk_col = QVBoxLayout()
         spk_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._spk_dial = _LevelDial(label="Speaker")
+        _no_wheel(self._spk_dial)
         spk_col.addWidget(self._spk_dial, alignment=Qt.AlignmentFlag.AlignHCenter)
         self._btn_test_spk = QPushButton("Test speaker")
         self._btn_test_spk.setFixedWidth(110)
@@ -611,6 +647,7 @@ class MainWindow(QMainWindow):
         mic_col = QVBoxLayout()
         mic_col.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self._mic_dial = _LevelDial(label="Microphone")
+        _no_wheel(self._mic_dial)
         mic_col.addWidget(self._mic_dial, alignment=Qt.AlignmentFlag.AlignHCenter)
         self._btn_test_mic = QPushButton("Record mic")
         self._btn_test_mic.setFixedWidth(110)
@@ -652,20 +689,21 @@ class MainWindow(QMainWindow):
         lg2.setContentsMargins(16, 12, 16, 12)
         lg2.setSpacing(10)
 
-        def _ios_row(icon: str, slider_attr: str, label_attr: str,
+        def _ios_row(name: str, slider_attr: str, label_attr: str,
                      lo: int, hi: int, val: int, on_change):
             row = QHBoxLayout()
             row.setSpacing(10)
-            ico = QLabel(icon)
-            ico.setFixedWidth(18)
-            ico.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            ico.setStyleSheet("font-size: 15px; background: transparent;")
+            ico = QLabel(name)
+            ico.setFixedWidth(90)
+            ico.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            ico.setStyleSheet("font-size: 12px; background: transparent;")
             row.addWidget(ico)
             sl = QSlider(Qt.Orientation.Horizontal)
             sl.setRange(lo, hi)
             sl.setValue(val)
             sl.setFixedHeight(20)
             sl.valueChanged.connect(on_change)
+            _no_wheel(sl)
             setattr(self, slider_attr, sl)
             row.addWidget(sl, 1)
             lbl = QLabel(f"{val}%")
@@ -676,9 +714,9 @@ class MainWindow(QMainWindow):
             row.addWidget(lbl)
             return row
 
-        lg2.addLayout(_ios_row("🔊", "_vol_slider",      "_vol_label",      0, 100, 80, self._on_volume_slider))
-        lg2.addLayout(_ios_row("🔔", "_ring_vol_slider", "_ring_vol_label", 0, 100, 80, self._on_ring_volume_slider))
-        lg2.addLayout(_ios_row("🎤", "_mic_sens_slider", "_mic_sens_label", 0, 150, 80, self._on_mic_sensitivity_slider))
+        lg2.addLayout(_ios_row("Speaker",     "_vol_slider",      "_vol_label",      0, 100, 80, self._on_volume_slider))
+        lg2.addLayout(_ios_row("Ring",        "_ring_vol_slider", "_ring_vol_label", 0, 100, 80, self._on_ring_volume_slider))
+        lg2.addLayout(_ios_row("Microphone",  "_mic_sens_slider", "_mic_sens_label", 0, 150, 80, self._on_mic_sensitivity_slider))
 
         layout.addWidget(levels_group)
 
@@ -691,6 +729,7 @@ class MainWindow(QMainWindow):
         for t in _ALL_THEMES:
             self._theme_combo.addItem(t.name)
         self._theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
+        _no_wheel(self._theme_combo)
         tg_layout.addWidget(self._theme_combo, 1)
         layout.addWidget(theme_group)
 
@@ -710,6 +749,9 @@ class MainWindow(QMainWindow):
         hint.setObjectName("hintLabel")
         layout.addWidget(hint)
 
+        # ── About / Update ────────────────────────────────────────────────────
+        layout.addWidget(self._build_about_group())
+
         layout.addStretch()
 
         # Populate devices when this tab is first shown
@@ -717,6 +759,117 @@ class MainWindow(QMainWindow):
         return outer
 
     # ── Settings helpers ──────────────────────────────────────────────────────
+
+    def _build_about_group(self) -> "QGroupBox":
+        from PyQt6.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
+        from core.version import __version__
+
+        group = QGroupBox("About")
+        v = QVBoxLayout(group)
+        v.setSpacing(8)
+
+        ver_lbl = QLabel(f"HandsFree  v{__version__}  —  MIT License, free to use and modify")
+        ver_lbl.setStyleSheet("font-weight: bold;")
+        v.addWidget(ver_lbl)
+
+        update_row = QHBoxLayout()
+        update_row.setSpacing(12)
+
+        self._btn_check_update = QPushButton("Check for updates")
+        self._btn_check_update.setMinimumWidth(160)
+        self._btn_check_update.clicked.connect(self._check_for_updates)
+        update_row.addWidget(self._btn_check_update)
+
+        self._btn_download_update = QPushButton("Install update")
+        self._btn_download_update.setMinimumWidth(160)
+        self._btn_download_update.setVisible(False)
+        self._btn_download_update.clicked.connect(self._start_download)
+        update_row.addWidget(self._btn_download_update)
+
+        self._update_status = QLabel("")
+        self._update_status.setStyleSheet("font-size: 12px; color: #8e8e93;")
+        self._update_status.setWordWrap(True)
+        update_row.addWidget(self._update_status, 1)
+
+        v.addLayout(update_row)
+
+        # QThread workers kept alive as instance vars
+        self._checker    = None
+        self._downloader = None
+        self._pending_asset_url = None
+        return group
+
+    def _check_for_updates(self):
+        from core.updater import UpdateChecker
+        self._btn_check_update.setEnabled(False)
+        self._btn_check_update.setText("Checking…")
+        self._btn_download_update.setVisible(False)
+        self._update_status.setText("")
+
+        self._checker = UpdateChecker(self)
+        self._checker.update_available.connect(self._on_update_available)
+        self._checker.up_to_date.connect(self._on_up_to_date)
+        self._checker.check_failed.connect(self._on_check_failed)
+        self._checker.start()
+
+    def _silent_update_check(self):
+        from core.updater import UpdateChecker
+        self._silent_checker = UpdateChecker(self)
+        self._silent_checker.update_available.connect(self._on_silent_update_available)
+        self._silent_checker.start()
+
+    def _on_silent_update_available(self, info: dict):
+        self._update_badge.show_update(info["tag"])
+
+    def _on_update_badge_clicked(self):
+        # Switch to Settings tab and scroll to About group
+        for i in range(self._tabs.count()):
+            if self._tabs.tabText(i) == "Settings":
+                self._tabs.setCurrentIndex(i)
+                break
+
+    def _on_update_available(self, info: dict):
+        self._pending_asset_url = info.get("asset_url")
+        self._update_status.setText(f"New version available: {info['tag']}")
+        self._btn_download_update.setVisible(True)
+        self._btn_check_update.setEnabled(True)
+        self._btn_check_update.setText("Check for updates")
+
+    def _on_up_to_date(self):
+        self._btn_check_update.setEnabled(True)
+        self._btn_check_update.setText("Check for updates")
+        self._update_status.setText("You are running the latest version.")
+
+    def _on_check_failed(self, msg: str):
+        self._btn_check_update.setEnabled(True)
+        self._btn_check_update.setText("Check for updates")
+        self._update_status.setText(f"Update check failed: {msg}")
+
+    def _start_download(self):
+        from core.updater import UpdateDownloader, apply_update_linux
+        if not self._pending_asset_url:
+            return
+        self._btn_download_update.setEnabled(False)
+        self._update_status.setText("Downloading… 0%")
+
+        self._downloader = UpdateDownloader(self._pending_asset_url, self)
+        self._downloader.progress.connect(self._on_download_progress)
+        self._downloader.finished.connect(self._on_download_finished)
+        self._downloader.failed.connect(self._on_download_failed)
+        self._downloader.start()
+
+    def _on_download_progress(self, done: int, total: int):
+        pct = int(done * 100 / total) if total else 0
+        self._update_status.setText(f"Downloading… {pct}%")
+
+    def _on_download_finished(self, tmp_path: str):
+        from core.updater import apply_update_linux
+        self._update_status.setText("Applying update and restarting…")
+        apply_update_linux(tmp_path)
+
+    def _on_download_failed(self, msg: str):
+        self._btn_download_update.setEnabled(True)
+        self._update_status.setText(f"Download failed: {msg}")
 
     def _refresh_audio_devices(self):
         """Query pactl for available sinks and sources and fill the dropdowns."""
@@ -1290,12 +1443,24 @@ class MainWindow(QMainWindow):
 
     def set_devices(self, devices: list[dict]):
         self._devices = devices
+        prev_path = self._device_combo.currentData()
+        self._device_combo.blockSignals(True)
         self._device_combo.clear()
-        for d in devices:
-            self._device_combo.addItem(
-                f"{d['name']} ({d['address']})",
-                userData=d["path"],
-            )
+        restore_idx = 0
+        for i, d in enumerate(devices):
+            offline = d.get("offline", False)
+            label = f"{d['name']} ({d['address']})" + (" — last seen" if offline else "")
+            self._device_combo.addItem(label, userData=d["path"])
+            if offline:
+                # Dim the item to signal it's not currently in range
+                self._device_combo.setItemData(
+                    i, QColor("#888888"), Qt.ItemDataRole.ForegroundRole
+                )
+            if d["path"] == prev_path:
+                restore_idx = i
+        if prev_path:
+            self._device_combo.setCurrentIndex(restore_idx)
+        self._device_combo.blockSignals(False)
 
     def refresh_call_log(self):
         self._calllog_list.clear()
@@ -1870,3 +2035,44 @@ class _SyncWidget(QWidget):
                 int(tip_x + size * math.cos(a)),
                 int(tip_y - size * math.sin(a)),
             )
+
+
+class _UpdateBadge(QWidget):
+    """Status-bar badge that appears when a newer version is available.
+    Looks like '↑ Update v1.2.0' in amber; clicking it jumps to Settings."""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tag = ""
+        self.setVisible(False)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("A new version is available — click to go to Settings")
+
+    def show_update(self, tag: str):
+        self._tag = tag
+        fm = self.fontMetrics()
+        text_w = fm.horizontalAdvance(self._text())
+        self.setFixedSize(text_w + 10, 20)
+        self.setVisible(True)
+        self.update()
+
+    def _text(self) -> str:
+        return f"↑ Update {self._tag}"
+
+    def paintEvent(self, _event):
+        if not self._tag:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        font = self.font()
+        font.setPointSize(9)
+        p.setFont(font)
+        p.setPen(QColor("#f0a500"))
+        p.drawText(self.rect(), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._text())
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()

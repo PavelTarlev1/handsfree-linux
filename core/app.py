@@ -286,6 +286,9 @@ class HandsFreeApp(QObject):
         self._tray.set_connected(device_name)
         self._window.on_connected(device_name)
         self._tray.show_notification("HandsFree", f"Connected to {device_name}")
+        # Remember this phone so it stays in the dropdown even when offline
+        address = device_path.split("/")[-1].replace("_", ":")
+        self._cfg.remember_device(device_path, device_name, address)
         self._refresh_devices()
         # If we skipped the sync because it ran recently, restore the synced
         # count on the status bar so it doesn't stay blank after reconnect.
@@ -730,9 +733,15 @@ class HandsFreeApp(QObject):
 
     def _refresh_devices_thread(self):
         try:
-            devices = self._hfp.get_paired_devices()
-            # Post result back to Qt main thread via signal
-            self._bridge.sig_devices_ready.emit(devices)
+            live = self._hfp.get_paired_devices()
+            live_paths = {d["path"] for d in live}
+            # Append known-but-offline devices so the user can still select them
+            offline = [
+                {**d, "offline": True}
+                for d in self._cfg.bluetooth.known_devices
+                if d["path"] not in live_paths
+            ]
+            self._bridge.sig_devices_ready.emit(live + offline)
         except Exception as e:
             logger.debug("Device refresh error: %s", e)
 

@@ -113,15 +113,22 @@ def main():
     setup_logging(args.debug, args.log_file)
     check_dependencies()
 
+    from core.version import __version__
     log = logging.getLogger("main")
-    log.info("Starting HandsFree on %s Python %s", platform.system(), sys.version.split()[0])
+    log.info("Starting HandsFree v%s on %s Python %s", __version__, platform.system(), sys.version.split()[0])
 
     # Qt requires QApplication before any QWidget
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QIcon
     qt_app = QApplication(sys.argv)
     qt_app.setApplicationName("HandsFree")
     qt_app.setApplicationDisplayName("HandsFree")
+    qt_app.setApplicationVersion(__version__)
     qt_app.setQuitOnLastWindowClosed(False)  # Stay alive in tray
+
+    _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "icon_256.png")
+    if os.path.exists(_icon_path):
+        qt_app.setWindowIcon(QIcon(_icon_path))
 
     from core.app import HandsFreeApp
     app = HandsFreeApp(qt_app)

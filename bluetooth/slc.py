@@ -208,8 +208,15 @@ class SLCConnection:
             except OSError:
                 pass
             logger.info("SLC disconnected from %s", self._device_path)
-            if self._on_disconnected:
-                self._on_disconnected(self._device_path)
+            self._call_state_cleanup_on_disconnect()
+
+    def _call_state_cleanup_on_disconnect(self):
+        if self._call_state != CallState.IDLE:
+            self._call_state = CallState.IDLE
+            if self._on_call_ended:
+                self._on_call_ended()
+        if self._on_disconnected:
+            self._on_disconnected(self._device_path)
 
     def _do_slc_handshake(self):
         """

@@ -20,6 +20,35 @@ Your phone connects via HFP (Hands-Free Profile) and HandsFree handles calls, co
 
 ---
 
+## Supported devices
+
+Any phone that supports **Bluetooth HFP (Hands-Free Profile)** works — that's essentially every smartphone made in the last 15 years. If your phone can connect to a car hands-free kit, it works with HandsFree.
+
+| Platform | Calls | Contact sync |
+|---|---|---|
+| **iPhone** (iPhone 3G+) | ✅ | ✅ Reliable on all models |
+| **Android** (all manufacturers) | ✅ | ⚠️ Requires permission on Android 12+; varies by manufacturer |
+| **Older Nokia / feature phones** | ✅ | ❌ No PBAP |
+| **Any Bluetooth HFP device** | ✅ | Depends on device |
+
+> **Android note:** Samsung, Pixel, Xiaomi, OnePlus, Sony and all other Android phones work for calls. Contact sync depends on the manufacturer and Android version — you will see a permission prompt on the phone when syncing.
+
+### Host computer requirements
+
+Any Linux computer or laptop with Bluetooth 2.1 or newer. This covers virtually all hardware made after 2008.
+
+| Hardware | Support |
+|---|---|
+| **Built-in Bluetooth** (laptops, modern desktops) | ✅ Works out of the box |
+| **USB Bluetooth dongle** | ✅ Any dongle supported by the Linux kernel |
+| **Desktop PC without Bluetooth** | ✅ Add a USB dongle (~€5) |
+
+> **Bluetooth version:** HFP requires Bluetooth 2.1+. For wideband audio (HD voice via mSBC codec) your adapter needs Bluetooth 4.0+. Older adapters fall back to CVSD (narrowband) automatically.
+
+> **Important:** Your computer's Bluetooth adapter must be set to **Hands-Free** role in BlueZ for this app to work. This is what HandsFree registers on startup — do **not** let WirePlumber or PulseAudio claim the HFP role first, or the connection will fail. See the [WirePlumber conflict](#wireplumber-conflict) section below.
+
+---
+
 ## Requirements
 
 ### Linux

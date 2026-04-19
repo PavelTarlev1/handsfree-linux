@@ -21,17 +21,31 @@ sudo apt-get install -y \
 echo "[2/3] Installing Python packages..."
 pip3 install --user PyQt6 vobject psutil
 
-# Desktop entry
-echo "[3/3] Creating desktop entry..."
+# Desktop entry + icon
+echo "[3/3] Creating desktop entry and installing icon..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-mkdir -p ~/.config/autostart
+# Install icon at standard XDG sizes
+for SIZE in 16 32 48 64 128 256 512; do
+    ICON_SRC="${SCRIPT_DIR}/resources/icon_${SIZE}.png"
+    if [ -f "$ICON_SRC" ]; then
+        ICON_DIR="${HOME}/.local/share/icons/hicolor/${SIZE}x${SIZE}/apps"
+        mkdir -p "$ICON_DIR"
+        cp "$ICON_SRC" "$ICON_DIR/handsfree.png"
+    fi
+done
+# Refresh icon cache if possible
+gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
+
+mkdir -p ~/.config/autostart ~/.local/share/applications
+
 cat > ~/.config/autostart/handsfree.desktop << EOF
 [Desktop Entry]
 Type=Application
 Name=HandsFree
 Comment=Bluetooth Hands-Free for your computer
 Exec=python3 ${SCRIPT_DIR}/main.py
+Icon=handsfree
 Hidden=false
 X-GNOME-Autostart-enabled=true
 EOF
@@ -42,8 +56,8 @@ Type=Application
 Name=HandsFree
 Comment=Bluetooth Hands-Free for your computer
 Exec=python3 ${SCRIPT_DIR}/main.py
-Icon=phone
-Categories=Utility;
+Icon=handsfree
+Categories=Utility;Network;
 StartupNotify=false
 EOF
 

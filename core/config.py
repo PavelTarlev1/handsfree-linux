@@ -22,6 +22,7 @@ class BluetoothConfig:
     adapter: str = "hci0"
     auto_connect: bool = True
     preferred_codec: str = "msbc"  # "msbc" or "cvsd"
+    known_devices: list = field(default_factory=list)  # [{"path": ..., "name": ..., "address": ...}]
 
 
 @dataclass
@@ -87,6 +88,7 @@ class Config:
                 logger.warning("Failed to load config: %s — using defaults", e)
         else:
             cfg._write_defaults()
+        cfg._load_known_devices()
         return cfg
 
     def _load_toml(self):
@@ -106,6 +108,7 @@ class Config:
         self.bluetooth.adapter = bt.get("adapter", self.bluetooth.adapter)
         self.bluetooth.auto_connect = bt.get("auto_connect", self.bluetooth.auto_connect)
         self.bluetooth.preferred_codec = bt.get("preferred_codec", self.bluetooth.preferred_codec)
+        self.bluetooth.known_devices = bt.get("known_devices", self.bluetooth.known_devices)
 
         au = data.get("audio", {})
         self.audio.sco_routing = au.get("sco_routing", self.audio.sco_routing)
@@ -176,3 +179,32 @@ show_main_window_on_start = false
 call_popup_timeout_seconds = 30
 """)
         logger.info("Default config written to %s", CONFIG_FILE)
+
+    def remember_device(self, path: str, name: str, address: str):
+        """Add or update a device in the known_devices list and persist it."""
+        for d in self.bluetooth.known_devices:
+            if d.get("path") == path:
+                d["name"] = name
+                d["address"] = address
+                self._save_known_devices()
+                return
+        self.bluetooth.known_devices.append({"path": path, "name": name, "address": address})
+        self._save_known_devices()
+
+    def _save_known_devices(self):
+        """Persist only the known_devices list by rewriting a small sidecar file."""
+        import json
+        sidecar = CONFIG_DIR / "known_devices.json"
+        try:
+            sidecar.write_text(json.dumps(self.bluetooth.known_devices, indent=2))
+        except OSError as e:
+            logger.warning("Could not save known_devices: %s", e)
+
+    def _load_known_devices(self):
+        import json
+        sidecar = CONFIG_DIR / "known_devices.json"
+        if sidecar.exists():
+            try:
+                self.bluetooth.known_devices = json.loads(sidecar.read_text())
+            except Exception as e:
+                logger.warning("Could not load known_devices: %s", e)
