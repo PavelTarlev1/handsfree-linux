@@ -179,16 +179,28 @@ class ContactStore:
         return self._row_to_contact(row) if row else None
 
     def search(self, query: str) -> list[Contact]:
-        q = f"%{query}%"
+        # Use Python's Unicode-aware casefold for the query, and filter in
+        # Python for name matching so Cyrillic/accented chars work correctly.
+        # Phone number matching stays in SQL (digits only, no case issue).
+        q_cf = query.casefold()
+        q_num = f"%{query}%"
         with self._lock:
             rows = self._conn.execute(
                 """SELECT * FROM contacts
-                   WHERE display_name LIKE ?
-                      OR custom_name LIKE ?
-                      OR phone_number LIKE ?
+                   WHERE phone_number LIKE ?
                    ORDER BY COALESCE(custom_name, display_name) COLLATE NOCASE""",
-                (q, q, q),
+                (q_num,),
             ).fetchall()
+            all_rows = self._conn.execute(
+                "SELECT * FROM contacts ORDER BY COALESCE(custom_name, display_name) COLLATE NOCASE"
+            ).fetchall()
+        seen = {r["id"] for r in rows}
+        for r in all_rows:
+            if r["id"] in seen:
+                continue
+            name = (r["custom_name"] or r["display_name"] or "").casefold()
+            if q_cf in name:
+                rows = list(rows) + [r]
         return [self._row_to_contact(r) for r in rows]
 
     def count(self) -> int:

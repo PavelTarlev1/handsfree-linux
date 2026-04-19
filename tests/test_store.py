@@ -112,10 +112,29 @@ class TestSearch:
         assert len(results) == 1
         assert results[0].display_name == "John Smith"
 
+    def test_search_lowercase(self, store):
+        store.upsert_contact(Contact(phone_uid="u1", display_name="John Smith", phone_number="1"))
+        assert len(store.search("john")) == 1
+        assert len(store.search("JOHN")) == 1
+        assert len(store.search("JoHn")) == 1
+
+    def test_search_custom_name_case_insensitive(self, store):
+        c = Contact(phone_uid="u1", display_name="John Smith", phone_number="1")
+        cid = store.upsert_contact(c)
+        store.rename_contact(cid, "Johnny")
+        assert len(store.search("johnny")) == 1
+        assert len(store.search("JOHNNY")) == 1
+
     def test_search_by_number(self, store):
         store.upsert_contact(Contact(phone_uid="u1", display_name="Test", phone_number="0501234567"))
         results = store.search("0501")
         assert len(results) == 1
+
+    def test_search_cyrillic_case_insensitive(self, store):
+        store.upsert_contact(Contact(phone_uid="u1", display_name="Иван Петров", phone_number="1"))
+        assert len(store.search("иван")) == 1
+        assert len(store.search("ИВАН")) == 1
+        assert len(store.search("Иван")) == 1
 
     def test_search_no_results(self, store):
         store.upsert_contact(Contact(phone_uid="u1", display_name="Alice", phone_number="1"))
