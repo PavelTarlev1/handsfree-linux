@@ -45,6 +45,43 @@ CREATE INDEX IF NOT EXISTS idx_call_log_number
 """
 
 
+_LATIN_TO_CYR = [
+    # Multi-char sequences first (order matters)
+    ("shch", "щ"), ("sch", "щ"),
+    ("zh",   "ж"), ("ch",  "ч"), ("sh", "ш"),
+    ("ts",   "ц"), ("yu",  "ю"), ("ya", "я"),
+    ("yo",   "ё"), ("ye",  "е"),
+    # Single chars
+    ("a", "а"), ("b", "б"), ("v", "в"), ("g", "г"), ("d", "д"),
+    ("e", "е"), ("z", "з"), ("i", "и"), ("y", "й"), ("k", "к"),
+    ("l", "л"), ("m", "м"), ("n", "н"), ("o", "о"), ("p", "п"),
+    ("r", "р"), ("s", "с"), ("t", "т"), ("u", "у"), ("f", "ф"),
+    ("h", "х"), ("c", "к"), ("j", "й"), ("q", "к"), ("x", "кс"),
+    ("w", "в"),
+]
+
+
+def _latin_to_cyrillic(text: str) -> str:
+    """Transliterate a lowercase Latin string to Cyrillic. Returns '' if the
+    input contains no Latin letters (already Cyrillic or digits)."""
+    if not any("a" <= ch <= "z" for ch in text):
+        return ""
+    result = ""
+    i = 0
+    while i < len(text):
+        matched = False
+        for lat, cyr in _LATIN_TO_CYR:
+            if text[i:i + len(lat)] == lat:
+                result += cyr
+                i += len(lat)
+                matched = True
+                break
+        if not matched:
+            result += text[i]
+            i += 1
+    return result
+
+
 class ContactStore:
     def __init__(self, db_path: Path):
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,8 +218,10 @@ class ContactStore:
     def search(self, query: str) -> list[Contact]:
         # Use Python's Unicode-aware casefold for the query, and filter in
         # Python for name matching so Cyrillic/accented chars work correctly.
-        # Phone number matching stays in SQL (digits only, no case issue).
+        # Also generate a Cyrillic transliteration of the Latin query so that
+        # typing "marian" finds "Мариан".
         q_cf = query.casefold()
+        q_cyrillic = _latin_to_cyrillic(q_cf)
         q_num = f"%{query}%"
         with self._lock:
             rows = self._conn.execute(
@@ -199,8 +238,9 @@ class ContactStore:
             if r["id"] in seen:
                 continue
             name = (r["custom_name"] or r["display_name"] or "").casefold()
-            if q_cf in name:
+            if q_cf in name or (q_cyrillic and q_cyrillic in name):
                 rows = list(rows) + [r]
+                seen.add(r["id"])
         return [self._row_to_contact(r) for r in rows]
 
     def count(self) -> int:

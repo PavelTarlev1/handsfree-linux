@@ -38,6 +38,16 @@ def _no_wheel(widget):
     widget.installEventFilter(_no_scroll)
 
 
+class _ComboBox(QComboBox):
+    """QComboBox that always opens downward."""
+
+    def showPopup(self):
+        super().showPopup()
+        popup = self.findChild(QFrame)
+        if popup and popup.isWindow():
+            popup.move(self.mapToGlobal(self.rect().bottomLeft()))
+
+
 class MainWindow(QMainWindow):
     """
     Main application window.
@@ -65,8 +75,7 @@ class MainWindow(QMainWindow):
         self._devices: list[dict] = []
 
         self.setWindowTitle("HandsFree")
-        self.setMinimumSize(520, 580)
-        self.resize(640, 680)
+        self.setFixedSize(520, 580)
 
         import os
         from PyQt6.QtGui import QIcon as _QIcon
@@ -215,27 +224,31 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         layout.setSpacing(8)
 
-        row = QHBoxLayout()
-        self._device_combo = QComboBox()
+        # Combo + Connect row (shown when disconnected)
+        combo_row = QHBoxLayout()
+        self._device_combo = _ComboBox()
         self._device_combo.setMinimumWidth(200)
         self._device_combo.setPlaceholderText("Select device…")
-        row.addWidget(self._device_combo, 1)
+        combo_row.addWidget(self._device_combo, 1)
 
         self._btn_connect = QPushButton("Connect")
         self._btn_connect.clicked.connect(self._on_connect_clicked)
-        row.addWidget(self._btn_connect)
+        combo_row.addWidget(self._btn_connect)
+        layout.addLayout(combo_row)
 
+        # Disconnect + Sync row (shown when connected)
+        action_row = QHBoxLayout()
         self._btn_disconnect = QPushButton("Disconnect")
         self._btn_disconnect.setVisible(False)
         self._btn_disconnect.clicked.connect(self.disconnect_requested)
-        row.addWidget(self._btn_disconnect)
+        action_row.addWidget(self._btn_disconnect, 1)
 
         self._btn_sync = QPushButton("Sync Contacts")
         self._btn_sync.setVisible(False)
         self._btn_sync.clicked.connect(self.sync_requested)
-        row.addWidget(self._btn_sync)
+        action_row.addWidget(self._btn_sync, 1)
+        layout.addLayout(action_row)
 
-        layout.addLayout(row)
         return group
 
     def _build_dial_tab(self) -> QWidget:
@@ -414,7 +427,7 @@ class MainWindow(QMainWindow):
         out_lbl.setObjectName("incallDevLabel")
         out_lbl.setFixedWidth(72)
         out_row.addWidget(out_lbl)
-        self._incall_output_combo = QComboBox()
+        self._incall_output_combo = _ComboBox()
         self._incall_output_combo.currentIndexChanged.connect(self._on_incall_output_changed)
         out_row.addWidget(self._incall_output_combo, 1)
         dev_layout.addLayout(out_row)
@@ -424,7 +437,7 @@ class MainWindow(QMainWindow):
         in_lbl.setObjectName("incallDevLabel")
         in_lbl.setFixedWidth(72)
         in_row.addWidget(in_lbl)
-        self._incall_input_combo = QComboBox()
+        self._incall_input_combo = _ComboBox()
         self._incall_input_combo.currentIndexChanged.connect(self._on_incall_input_changed)
         in_row.addWidget(self._incall_input_combo, 1)
         dev_layout.addLayout(in_row)
@@ -588,6 +601,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         outer_layout.addWidget(scroll)
 
         # Inner widget that actually holds all the settings content
@@ -597,6 +611,19 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
+
+        # ── Theme group ───────────────────────────────────────────────────────
+        theme_group = QGroupBox("Appearance")
+        tg_layout = QHBoxLayout(theme_group)
+        tg_layout.addWidget(QLabel("Theme:"))
+        self._theme_combo = _ComboBox()
+        from ui.themes import ALL as _ALL_THEMES
+        for t in _ALL_THEMES:
+            self._theme_combo.addItem(t.name)
+        self._theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
+        _no_wheel(self._theme_combo)
+        tg_layout.addWidget(self._theme_combo, 1)
+        layout.addWidget(theme_group)
 
         # ── Device group ──────────────────────────────────────────────────────
         layout.addWidget(self._build_device_group())
@@ -609,8 +636,11 @@ class MainWindow(QMainWindow):
 
         # Output device row
         out_row = QHBoxLayout()
-        out_row.addWidget(QLabel("Output (speaker):"))
-        self._audio_output_combo = QComboBox()
+        _out_lbl = QLabel("Output (speaker):")
+        _out_lbl.setFixedWidth(130)
+        out_row.addWidget(_out_lbl)
+        self._audio_output_combo = _ComboBox()
+        self._audio_output_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._audio_output_combo.currentIndexChanged.connect(self._on_audio_output_changed)
         _no_wheel(self._audio_output_combo)
         out_row.addWidget(self._audio_output_combo, 1)
@@ -618,8 +648,11 @@ class MainWindow(QMainWindow):
 
         # Input device row
         in_row = QHBoxLayout()
-        in_row.addWidget(QLabel("Input (microphone):"))
-        self._audio_input_combo = QComboBox()
+        _in_lbl = QLabel("Input (microphone):")
+        _in_lbl.setFixedWidth(130)
+        in_row.addWidget(_in_lbl)
+        self._audio_input_combo = _ComboBox()
+        self._audio_input_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self._audio_input_combo.currentIndexChanged.connect(self._on_audio_input_changed)
         _no_wheel(self._audio_input_combo)
         in_row.addWidget(self._audio_input_combo, 1)
@@ -720,19 +753,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(levels_group)
 
-        # ── Theme group ───────────────────────────────────────────────────────
-        theme_group = QGroupBox("Appearance")
-        tg_layout = QHBoxLayout(theme_group)
-        tg_layout.addWidget(QLabel("Theme:"))
-        self._theme_combo = QComboBox()
-        from ui.themes import ALL as _ALL_THEMES
-        for t in _ALL_THEMES:
-            self._theme_combo.addItem(t.name)
-        self._theme_combo.currentTextChanged.connect(self._on_theme_combo_changed)
-        _no_wheel(self._theme_combo)
-        tg_layout.addWidget(self._theme_combo, 1)
-        layout.addWidget(theme_group)
-
         # ── Developer mode ────────────────────────────────────────────────────
         dev_group = QGroupBox("Developer")
         dev_layout = QVBoxLayout(dev_group)
@@ -747,6 +767,7 @@ class MainWindow(QMainWindow):
         # ── Config file hint ──────────────────────────────────────────────────
         hint = QLabel("Advanced settings: ~/.config/handsfree/config.toml")
         hint.setObjectName("hintLabel")
+        hint.setWordWrap(True)
         layout.addWidget(hint)
 
         # ── About / Update ────────────────────────────────────────────────────
@@ -770,6 +791,7 @@ class MainWindow(QMainWindow):
 
         ver_lbl = QLabel(f"HandsFree  v{__version__}  —  MIT License, free to use and modify")
         ver_lbl.setStyleSheet("font-weight: bold;")
+        ver_lbl.setWordWrap(True)
         v.addWidget(ver_lbl)
 
         update_row = QHBoxLayout()
@@ -1463,44 +1485,41 @@ class MainWindow(QMainWindow):
         self._device_combo.blockSignals(False)
 
     def refresh_call_log(self):
+        from datetime import datetime, timezone
         self._calllog_list.clear()
         logs = self._store.get_call_log(limit=200)
         for entry in logs:
             contact = self._store.get_contact_by_id(entry.contact_id) if entry.contact_id else None
             if not contact:
                 contact = self._store.lookup_by_number(entry.number)
-            if not contact:
-                logger.info(
-                    "call log: no contact for number=%r contact_id=%s",
-                    entry.number, entry.contact_id,
-                )
             name = contact.effective_name if contact else entry.number
-
-            icon  = {"incoming": "↙", "outgoing": "↗", "missed": "✗"}.get(entry.direction, "?")
-            color = {"incoming": "#34a853", "outgoing": "#1a73e8", "missed": "#ea4335"}.get(entry.direction, "#9aa0a6")
+            photo = contact.photo_data if contact else None
 
             # Format duration
             if entry.duration_sec >= 60:
-                dur = f"  {entry.duration_sec // 60}m {entry.duration_sec % 60:02d}s"
+                dur = f"{entry.duration_sec // 60}m {entry.duration_sec % 60:02d}s"
             elif entry.duration_sec > 0:
-                dur = f"  {entry.duration_sec}s"
+                dur = f"{entry.duration_sec}s"
             else:
                 dur = ""
 
-            # Format timestamp: today → time only, otherwise date+time
-            from datetime import datetime, timezone
+            # Format timestamp
             try:
                 dt = datetime.fromisoformat(entry.started_at.replace("Z", "+00:00"))
                 today = datetime.now(timezone.utc).date()
-                ts = dt.strftime("%H:%M") if dt.date() == today else dt.strftime("%d %b %H:%M")
+                ts = dt.strftime("%H:%M") if dt.date() == today else dt.strftime("%d %b  %H:%M")
             except Exception:
                 ts = entry.started_at[:16]
 
-            item = QListWidgetItem(f"{icon}  {name}    {ts}{dur}")
-            item.setForeground(QColor(color))
-            item.setData(Qt.ItemDataRole.UserRole, entry)   # full CallLog for profile/redial
-            item.setToolTip(f"{entry.direction.capitalize()}  •  {entry.number}  •  {entry.started_at[:16]}")
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            row = _CallLogRow(name=name, photo=photo, direction=entry.direction,
+                              timestamp=ts, duration=dur)
+            from PyQt6.QtCore import QSize
+            hint = row.sizeHint()
+            item.setSizeHint(QSize(hint.width(), max(hint.height(), _CallLogRow._AVATAR_SIZE + 16)))
             self._calllog_list.addItem(item)
+            self._calllog_list.setItemWidget(item, row)
 
     # ── Slots ─────────────────────────────────────────────────────────────────
 
@@ -1617,12 +1636,46 @@ class MainWindow(QMainWindow):
             QPushButton:disabled {{ background: {t.bg2}; color: {t.fg_dim}; }}
             QComboBox {{
                 background: {t.bg2}; color: {t.fg};
-                border: 1px solid {t.border}; border-radius: 4px;
-                padding: 4px 8px;
+                border: 1px solid {t.border};
+                border-radius: 6px;
+                padding: 5px 10px;
+                min-height: 32px;
+            }}
+            QComboBox:hover {{
+                border-color: {t.accent_blue};
+            }}
+            QComboBox:focus {{
+                border: 1.5px solid {t.accent_blue};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 24px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                width: 0; height: 0;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 5px solid {t.fg_dim};
+                margin-right: 8px;
             }}
             QComboBox QAbstractItemView {{
-                background: {t.bg2}; color: {t.fg};
-                selection-background-color: {t.bg3};
+                background: {t.bg2};
+                color: {t.fg};
+                border: 1px solid {t.border};
+                selection-background-color: {t.accent_blue};
+                selection-color: {t.bg};
+                outline: none;
+            }}
+            QComboBox QAbstractItemView::item {{
+                min-height: 28px;
+                padding: 4px 10px;
+                background: {t.bg2};
+                color: {t.fg};
+            }}
+            QComboBox QAbstractItemView::item:selected {{
+                background: {t.accent_blue};
+                color: {t.bg};
             }}
             QSlider::groove:horizontal {{
                 background: {t.bg3}; height: 4px; border-radius: 2px;
@@ -2076,3 +2129,53 @@ class _UpdateBadge(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
+
+
+class _CallLogRow(QWidget):
+    """Call log row styled like the contact list: avatar + name + direction/time/duration."""
+
+    _DIRECTION_ICON  = {"incoming": "↙", "outgoing": "↗", "missed": "✗"}
+    _DIRECTION_COLOR = {"incoming": "#34a853", "outgoing": "#1a73e8", "missed": "#ea4335"}
+    _AVATAR_SIZE = 42
+
+    def __init__(self, name: str, photo: bytes | None,
+                 direction: str, timestamp: str, duration: str, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setMinimumHeight(self._AVATAR_SIZE + 16)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(12)
+
+        # Avatar — reuse the same helper from contacts_widget
+        from ui.contacts_widget import _avatar_pixmap
+        avatar = QLabel()
+        avatar.setStyleSheet("background: transparent; border: none;")
+        avatar.setPixmap(_avatar_pixmap(photo, name, self._AVATAR_SIZE))
+        avatar.setFixedSize(self._AVATAR_SIZE, self._AVATAR_SIZE)
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(avatar, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # Text column
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        text_col.setContentsMargins(0, 0, 0, 0)
+
+        name_lbl = QLabel(name)
+        name_lbl.setStyleSheet("background: transparent; border: none;")
+        font = name_lbl.font()
+        font.setPointSize(11)
+        name_lbl.setFont(font)
+        text_col.addWidget(name_lbl)
+
+        icon  = self._DIRECTION_ICON.get(direction, "?")
+        color = self._DIRECTION_COLOR.get(direction, "#9aa0a6")
+        sub_text = f"{icon}  {timestamp}"
+        if duration:
+            sub_text += f"  ·  {duration}"
+        sub_lbl = QLabel(sub_text)
+        sub_lbl.setStyleSheet(f"background: transparent; border: none; color: {color}; font-size: 11px;")
+        text_col.addWidget(sub_lbl)
+
+        layout.addLayout(text_col, 1)
