@@ -28,6 +28,8 @@ from voip.detector import VoIPDetector
 
 logger = logging.getLogger(__name__)
 
+_DEVICE_REFRESH_MS = 10_000   # how often to poll BlueZ for connected device list
+
 
 class _Bridge(QObject):
     """
@@ -131,7 +133,7 @@ class HandsFreeApp(QObject):
         # Refresh devices list periodically
         from PyQt6.QtCore import QTimer
         self._device_refresh_timer = QTimer()
-        self._device_refresh_timer.setInterval(10_000)  # 10 seconds
+        self._device_refresh_timer.setInterval(_DEVICE_REFRESH_MS)
         self._device_refresh_timer.timeout.connect(self._refresh_devices)
         self._device_refresh_timer.start()
 
@@ -419,6 +421,7 @@ class HandsFreeApp(QObject):
             else:
                 self._store.update_call_direction(self._call_log_id, "missed")
                 self._tray.add_missed_call()
+                self._window.add_missed_call()
 
             # Back-fill contact_id if it was missing at ring/dial time
             number = self._ring_number or self._last_dialled
@@ -739,6 +742,7 @@ class HandsFreeApp(QObject):
             self._window.raise_()
             self._window.activateWindow()
             self._tray.clear_missed_calls()
+            self._window.clear_missed_calls()
 
     def _refresh_devices(self):
         # Run D-Bus device enumeration in a thread — doing it on the Qt main

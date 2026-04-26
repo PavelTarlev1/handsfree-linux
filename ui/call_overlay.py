@@ -88,6 +88,10 @@ class CallOverlay(QWidget):
         self._name_lbl.setStyleSheet(
             "font-size: 14px; font-weight: bold; color: #e8eaed; background: transparent;"
         )
+        from PyQt6.QtWidgets import QGraphicsBlurEffect
+        self._name_blur = QGraphicsBlurEffect()
+        self._name_blur.setBlurRadius(6)
+        self._name_lbl.setGraphicsEffect(self._name_blur)
         info.addWidget(self._name_lbl)
 
         self._timer_lbl = QLabel("Calling…")

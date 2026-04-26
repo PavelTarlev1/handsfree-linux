@@ -360,15 +360,19 @@ class SLCConnection:
                 self._call_log_start = time.monotonic()
                 if self._on_call_active:
                     self._on_call_active()
-            elif value == 0 and self._call_state in (CallState.ACTIVE, CallState.INCOMING):
+            elif value == 0 and self._call_state in (CallState.ACTIVE, CallState.INCOMING, CallState.OUTGOING):
                 self._call_state = CallState.IDLE
                 self._caller_number = ""
                 if self._on_call_ended:
                     self._on_call_ended()
 
         elif name == "callsetup":
-            if value == 0 and self._call_state == CallState.INCOMING:
-                # callsetup went to idle without call becoming active → missed/rejected
+            if value in (2, 3):
+                # outgoing-dial or outgoing-alerting (ringing on remote side)
+                self._call_state = CallState.OUTGOING
+            elif value == 0 and self._call_state in (CallState.INCOMING, CallState.OUTGOING):
+                # callsetup went to idle without call becoming active:
+                # incoming → missed/rejected; outgoing → no answer / cancelled
                 self._call_state = CallState.IDLE
                 self._caller_number = ""
                 if self._on_call_ended:

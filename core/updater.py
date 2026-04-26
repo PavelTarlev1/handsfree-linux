@@ -18,7 +18,9 @@ from core.version import __version__
 _OWNER      = "PavelTarlev1"
 _REPO       = "HandsFree-Linux"
 _API        = f"https://api.github.com/repos/{_OWNER}/{_REPO}/releases/latest"
-_ASSET_NAME = "handsfree-linux.tar.gz"   # name of the asset attached to each release
+_ASSET_NAME           = "handsfree-linux.tar.gz"   # name of the asset attached to each release
+_API_CHECK_TIMEOUT_S  = 10    # seconds before giving up on the version-check request
+_DOWNLOAD_TIMEOUT_S   = 120   # seconds before giving up on the asset download
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
@@ -47,7 +49,7 @@ def check_for_update() -> dict | None:
     Raises on network failure.
     """
     req = urllib.request.Request(_API, headers=_api_headers())
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with urllib.request.urlopen(req, timeout=_API_CHECK_TIMEOUT_S) as resp:
         data = json.loads(resp.read().decode())
 
     tag    = data.get("tag_name", "")
@@ -77,7 +79,7 @@ def download_update(asset_url: str, progress_cb=None) -> str:
         asset_url,
         headers={**_api_headers(), "Accept": "application/octet-stream"},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
+    with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT_S) as resp:
         total = int(resp.headers.get("Content-Length", 0))
         fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", prefix="handsfree_update_")
         done = 0

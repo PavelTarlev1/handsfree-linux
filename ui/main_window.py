@@ -101,6 +101,15 @@ class _TitleBar(QWidget):
         pass  # prevent accidental maximise on double-click
 
 
+_CALL_ENDED_MSG_MS       = 5_000        # how long "Call ended" stays in the status bar
+_UPDATE_CHECK_DELAY_MS   = 5_000        # delay before first update check after startup
+_UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000  # re-check for updates every 4 hours
+_CALL_TICK_MS            = 1_000        # call duration timer fires every second
+_MIC_METER_FPS_MS        = 60           # mic level meter refresh (~16 fps)
+_SPK_ANIM_FPS_MS         = 30           # speaker test animation (~33 fps)
+_MISSED_BADGE_CAP        = 99           # maximum number shown on the missed-call badge
+
+
 class MainWindow(QMainWindow):
     """
     Main application window.
@@ -206,6 +215,17 @@ class MainWindow(QMainWindow):
         self._statusbar.addWidget(self._status_label)
         self._statusbar.addWidget(self._mute_btn)
 
+        self._missed_badge = QLabel()
+        self._missed_badge.setFixedSize(18, 18)
+        self._missed_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._missed_badge.setStyleSheet(
+            "color: white; background: #ea4335; border-radius: 9px;"
+            "font-size: 10px; font-weight: bold;"
+        )
+        self._missed_badge.setVisible(False)
+        self._statusbar.addWidget(self._missed_badge)
+        self._missed_count = 0
+
         # Right side: sync widget + update badge
         self._sync_widget = _SyncWidget()
         self._statusbar.addPermanentWidget(self._sync_widget)
@@ -213,9 +233,9 @@ class MainWindow(QMainWindow):
         self._update_badge = _UpdateBadge()
         self._update_badge.clicked.connect(self._on_update_badge_clicked)
         self._statusbar.addPermanentWidget(self._update_badge)
-        QTimer.singleShot(5000, self._silent_update_check)
+        QTimer.singleShot(_UPDATE_CHECK_DELAY_MS, self._silent_update_check)
         self._update_check_timer = QTimer(self)
-        self._update_check_timer.setInterval(4 * 60 * 60 * 1000)  # every 4 hours
+        self._update_check_timer.setInterval(_UPDATE_CHECK_INTERVAL_MS)
         self._update_check_timer.timeout.connect(self._silent_update_check)
         self._update_check_timer.start()
 
@@ -269,7 +289,7 @@ class MainWindow(QMainWindow):
         # Timer state
         self._call_elapsed_sec = 0
         self._call_timer = QTimer()
-        self._call_timer.setInterval(1000)
+        self._call_timer.setInterval(_CALL_TICK_MS)
         self._call_timer.timeout.connect(self._tick_call_timer)
 
         banner.setVisible(False)
@@ -769,7 +789,7 @@ class MainWindow(QMainWindow):
         # Internal state for mic record/playback test
         self._mic_test_proc = None
         self._mic_test_timer = QTimer()
-        self._mic_test_timer.setInterval(60)   # ~16 fps
+        self._mic_test_timer.setInterval(_MIC_METER_FPS_MS)
         self._mic_test_timer.timeout.connect(self._update_mic_level)
         self._mic_record_buf = bytearray()
         self._mic_record_timer = QTimer()
@@ -778,7 +798,7 @@ class MainWindow(QMainWindow):
 
         # Internal state for speaker dial animation
         self._spk_anim_timer = QTimer()
-        self._spk_anim_timer.setInterval(30)   # ~30 fps during beep
+        self._spk_anim_timer.setInterval(_SPK_ANIM_FPS_MS)
         self._spk_anim_step = 0
         self._spk_anim_timer.timeout.connect(self._animate_spk_dial)
 
@@ -1531,11 +1551,20 @@ class MainWindow(QMainWindow):
             self._mute_btn.setText("🔔")
             self._mute_btn.setToolTip("Click to mute calls")
 
+    def add_missed_call(self):
+        self._missed_count = min(self._missed_count + 1, _MISSED_BADGE_CAP)
+        self._missed_badge.setText(str(self._missed_count))
+        self._missed_badge.setVisible(True)
+
+    def clear_missed_calls(self):
+        self._missed_count = 0
+        self._missed_badge.setVisible(False)
+
     def on_call_ended(self):
         self._call_timer.stop()
         self._call_banner.setVisible(False)
         self._dial_stack.setCurrentIndex(0)
-        self._statusbar.showMessage("Call ended")
+        self._statusbar.showMessage("Call ended", _CALL_ENDED_MSG_MS)
         self.refresh_call_log()
         self._update_dev_preview("No active call", "—", "")
         # Show red "Call Ended" overlay then auto-hide it
@@ -2097,7 +2126,7 @@ class _SyncWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self._spin_timer = QTimer(self)
-        self._spin_timer.setInterval(30)   # ~33 fps
+        self._spin_timer.setInterval(_SPK_ANIM_FPS_MS)
         self._spin_timer.timeout.connect(self._tick)
 
         self.setVisible(False)

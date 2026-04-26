@@ -12,6 +12,8 @@ from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
 
 logger = logging.getLogger(__name__)
 
+_MISSED_BADGE_CAP = 99   # maximum number shown on the missed-call badge
+
 
 def _make_tray_icon(color: str, size: int = 22,
                     muted: bool = False, badge: int = 0) -> QIcon:
@@ -60,7 +62,7 @@ def _make_tray_icon(color: str, size: int = 22,
 
     # ── Missed-call badge (red circle + number, top-right) ────────────────────
     if badge > 0:
-        count = min(badge, 99)
+        count = min(badge, _MISSED_BADGE_CAP)
         label = str(count)
         br = size // 2 - 1          # badge radius
         bx = size - br - 1          # centre x
@@ -122,7 +124,7 @@ class TrayIcon(QObject):
         ))
 
     def add_missed_call(self):
-        self._missed_calls = min(self._missed_calls + 1, 99)
+        self._missed_calls = min(self._missed_calls + 1, _MISSED_BADGE_CAP)
         self._refresh_icon()
 
     def clear_missed_calls(self):
