@@ -48,6 +48,59 @@ class _ComboBox(QComboBox):
             popup.move(self.mapToGlobal(self.rect().bottomLeft()))
 
 
+class _TitleBar(QWidget):
+    """VS Code-style frameless title bar: drag area + title + min/close buttons."""
+
+    def __init__(self, window: "MainWindow", parent=None):
+        super().__init__(parent)
+        self._win = window
+        self._drag_pos = None
+        self.setFixedHeight(32)
+        self.setObjectName("titleBar")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 0, 4, 0)
+        layout.setSpacing(6)
+
+        import os
+        from PyQt6.QtGui import QPixmap
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "resources", "icon_16.png")
+        if os.path.exists(icon_path):
+            icon_lbl = QLabel()
+            icon_lbl.setPixmap(QPixmap(icon_path))
+            icon_lbl.setFixedSize(16, 16)
+            icon_lbl.setStyleSheet("background: transparent;")
+            layout.addWidget(icon_lbl)
+
+        layout.addStretch()
+
+        self._btn_min = QPushButton("─")
+        self._btn_min.setObjectName("titleBtn")
+        self._btn_min.setFixedSize(46, 32)
+        self._btn_min.clicked.connect(window.showMinimized)
+        layout.addWidget(self._btn_min)
+
+        self._btn_close = QPushButton("✕")
+        self._btn_close.setObjectName("titleBtnClose")
+        self._btn_close.setFixedSize(46, 32)
+        self._btn_close.clicked.connect(window.hide)
+        layout.addWidget(self._btn_close)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and event.buttons() == Qt.MouseButton.LeftButton:
+            self._win.move(event.globalPosition().toPoint() - self._drag_pos)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+    def mouseDoubleClickEvent(self, event):
+        pass  # prevent accidental maximise on double-click
+
+
 class MainWindow(QMainWindow):
     """
     Main application window.
@@ -60,6 +113,7 @@ class MainWindow(QMainWindow):
     disconnect_requested = pyqtSignal()
     hangup_requested     = pyqtSignal()
     mute_requested       = pyqtSignal(bool)  # True = mute on
+    mute_btn_clicked     = pyqtSignal()
 
     # Settings signals
     audio_output_changed    = pyqtSignal(str)   # pactl sink name
@@ -76,6 +130,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("HandsFree")
         self.setFixedSize(520, 580)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
 
         import os
         from PyQt6.QtGui import QIcon as _QIcon
@@ -99,6 +154,9 @@ class MainWindow(QMainWindow):
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
+
+        self._title_bar = _TitleBar(self)
+        main_layout.addWidget(self._title_bar)
 
         # Active-call banner (hidden until a call is active)
         self._call_banner = self._build_call_banner()
@@ -132,11 +190,21 @@ class MainWindow(QMainWindow):
 
         # Left side: connection dot + label
         self._status_dot = QLabel("⚠")
-        self._status_dot.setStyleSheet("color: #f0a500; font-size: 14px;")
+        self._status_dot.setStyleSheet("color: #ffffff; font-size: 14px; background: transparent;")
         self._status_label = QLabel("Not connected")
-        self._status_label.setStyleSheet("font-size: 12px;")
+        self._status_label.setStyleSheet("font-size: 12px; color: #ffffff; background: transparent;")
+        self._mute_btn = QPushButton("🔔")
+        self._mute_btn.setFlat(True)
+        self._mute_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mute_btn.setStyleSheet(
+            "QPushButton { font-size: 13px; background: transparent; border: none; padding: 0 2px; }"
+            "QPushButton:hover { background: rgba(255,255,255,0.15); border-radius: 3px; }"
+        )
+        self._mute_btn.setToolTip("Click to mute calls")
+        self._mute_btn.clicked.connect(self.mute_btn_clicked)
         self._statusbar.addWidget(self._status_dot)
         self._statusbar.addWidget(self._status_label)
+        self._statusbar.addWidget(self._mute_btn)
 
         # Right side: sync widget + update badge
         self._sync_widget = _SyncWidget()
@@ -522,6 +590,12 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
+
+        self._calllog_search = QLineEdit()
+        self._calllog_search.setPlaceholderText("Search call log…")
+        self._calllog_search.setClearButtonEnabled(True)
+        self._calllog_search.textChanged.connect(self._filter_calllog)
+        layout.addWidget(self._calllog_search)
 
         self._calllog_list = QListWidget()
         self._calllog_list.setObjectName("calllogList")
@@ -1332,8 +1406,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot(str)
     def on_connected(self, device_name: str):
         self._status_dot.setText("●")
-        self._status_dot.setStyleSheet("color: #34a853; font-size: 14px;")
-        self._status_label.setText(f"Connected: {device_name}")
+        self._status_dot.setStyleSheet("color: #34a853; font-size: 14px; background: transparent;")
+        self._status_label.setText(device_name)
         self._device_combo.setVisible(False)
         self._btn_connect.setVisible(False)
         self._btn_disconnect.setVisible(True)
@@ -1343,7 +1417,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def on_disconnected(self):
         self._status_dot.setText("⚠")
-        self._status_dot.setStyleSheet("color: #f0a500; font-size: 14px;")
+        self._status_dot.setStyleSheet("color: #ffffff; font-size: 14px; background: transparent;")
         self._status_label.setText("Not connected")
         self._device_combo.setVisible(True)
         self._btn_connect.setVisible(True)
@@ -1449,6 +1523,14 @@ class MainWindow(QMainWindow):
         self._update_dev_preview(display, "0:00", display[:2].upper() if display else "?")
 
     @pyqtSlot()
+    def set_muted(self, muted: bool):
+        if muted:
+            self._mute_btn.setText("🔕")
+            self._mute_btn.setToolTip("Calls muted — click to unmute")
+        else:
+            self._mute_btn.setText("🔔")
+            self._mute_btn.setToolTip("Click to mute calls")
+
     def on_call_ended(self):
         self._call_timer.stop()
         self._call_banner.setVisible(False)
@@ -1521,6 +1603,16 @@ class MainWindow(QMainWindow):
             self._calllog_list.addItem(item)
             self._calllog_list.setItemWidget(item, row)
 
+    def _filter_calllog(self, text: str):
+        q = text.casefold()
+        for i in range(self._calllog_list.count()):
+            item = self._calllog_list.item(i)
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            row_widget = self._calllog_list.itemWidget(item)
+            name = (row_widget._name_lbl.text() if row_widget else "").casefold()
+            number = (entry.number if entry else "").casefold()
+            item.setHidden(bool(q) and q not in name and q not in number)
+
     # ── Slots ─────────────────────────────────────────────────────────────────
 
     def _on_dial(self):
@@ -1562,12 +1654,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_mic_dial"):
             self._mic_dial.set_theme(t.dial_bg, t.dial_track)
         if hasattr(self, "_sync_widget"):
-            self._sync_widget.set_accent(t.accent_blue)
+            self._sync_widget.set_accent("#ffffff")
 
     def _refresh_inline_styles(self, t):
         """Re-apply the handful of styles that can't live in the global QSS."""
         # Status label colour follows the theme; dot colours are fixed (green / amber)
-        self._status_label.setStyleSheet(f"font-size: 12px; color: {t.fg};")
+        self._status_label.setStyleSheet("font-size: 12px; color: #ffffff; background: transparent;")
 
     def _apply_theme_qss(self, t):
         self.setStyleSheet(f"""
@@ -1576,6 +1668,35 @@ class MainWindow(QMainWindow):
                 color: {t.fg};
                 font-family: "Segoe UI", "Ubuntu", sans-serif;
                 font-size: 13px;
+            }}
+            #titleBar {{
+                background: {t.bg2};
+                border-bottom: 1px solid {t.border};
+            }}
+            #titleLabel {{
+                color: {t.fg_dim};
+                font-size: 12px;
+                background: transparent;
+            }}
+            #titleBtn {{
+                background: transparent;
+                color: {t.fg_dim};
+                border: none;
+                font-size: 14px;
+            }}
+            #titleBtn:hover {{
+                background: {t.bg3};
+                color: {t.fg};
+            }}
+            #titleBtnClose {{
+                background: transparent;
+                color: {t.fg_dim};
+                border: none;
+                font-size: 14px;
+            }}
+            #titleBtnClose:hover {{
+                background: #c0392b;
+                color: #ffffff;
             }}
             QGroupBox {{
                 border: 1px solid {t.border};
@@ -1692,7 +1813,8 @@ class MainWindow(QMainWindow):
             QSlider::handle:horizontal:hover {{
                 background: #e8eaed;
             }}
-            QStatusBar {{ color: {t.statusbar_fg}; background: {t.bg}; }}
+            QStatusBar {{ color: #ffffff; background: #007acc; }}
+            QStatusBar QLabel {{ color: #ffffff; background: transparent; }}
             /* ── Call banner ── */
             #callBanner {{
                 background: {t.bg_banner};
@@ -1971,7 +2093,8 @@ class _SyncWidget(QWidget):
         self._state   = "idle"   # "idle" | "syncing" | "synced"
         self._count   = 0
         self._angle   = 0        # rotation angle for spin animation
-        self._accent  = "#8ab4f8"
+        self._accent  = "#ffffff"
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
         self._spin_timer = QTimer(self)
         self._spin_timer.setInterval(30)   # ~33 fps
@@ -2067,7 +2190,7 @@ class _SyncWidget(QWidget):
         # Label text
         text = self._label_text()
         if text:
-            p.setPen(QColor("#9aa0a6"))
+            p.setPen(QColor("#ffffff"))
             font = self.font()
             font.setPointSize(9)
             p.setFont(font)
@@ -2100,6 +2223,7 @@ class _UpdateBadge(QWidget):
         super().__init__(parent)
         self._tag = ""
         self.setVisible(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("A new version is available — click to go to Settings")
 
@@ -2122,7 +2246,7 @@ class _UpdateBadge(QWidget):
         font = self.font()
         font.setPointSize(9)
         p.setFont(font)
-        p.setPen(QColor("#f0a500"))
+        p.setPen(QColor("#ffe066"))
         p.drawText(self.rect(), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._text())
         p.end()
 
@@ -2162,7 +2286,8 @@ class _CallLogRow(QWidget):
         text_col.setSpacing(2)
         text_col.setContentsMargins(0, 0, 0, 0)
 
-        name_lbl = QLabel(name)
+        self._name_lbl = QLabel(name)
+        name_lbl = self._name_lbl
         name_lbl.setStyleSheet("background: transparent; border: none;")
         font = name_lbl.font()
         font.setPointSize(11)

@@ -99,6 +99,8 @@ class ContactStore:
             cols = [r[1] for r in self._conn.execute("PRAGMA table_info(contacts)").fetchall()]
             if "photo_data" not in cols:
                 self._conn.execute("ALTER TABLE contacts ADD COLUMN photo_data BLOB")
+            if "is_favorite" not in cols:
+                self._conn.execute("ALTER TABLE contacts ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0")
             log_cols = [r[1] for r in self._conn.execute("PRAGMA table_info(call_log)").fetchall()]
             if "source_uid" not in log_cols:
                 self._conn.execute("ALTER TABLE call_log ADD COLUMN source_uid TEXT")
@@ -164,9 +166,23 @@ class ContactStore:
     def get_all(self) -> list[Contact]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT * FROM contacts ORDER BY COALESCE(custom_name, display_name) COLLATE NOCASE"
+                "SELECT * FROM contacts ORDER BY is_favorite DESC, COALESCE(custom_name, display_name) COLLATE NOCASE"
             ).fetchall()
         return [self._row_to_contact(r) for r in rows]
+
+    def toggle_favorite(self, contact_id: int) -> bool:
+        """Flip is_favorite for a contact. Returns the new state."""
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT is_favorite FROM contacts WHERE id = ?", (contact_id,)
+            ).fetchone()
+            if not row:
+                return False
+            new_val = 0 if row[0] else 1
+            self._conn.execute(
+                "UPDATE contacts SET is_favorite = ? WHERE id = ?", (new_val, contact_id)
+            )
+            return bool(new_val)
 
     def lookup_by_number(self, number: str) -> Optional[Contact]:
         import logging as _log
@@ -256,6 +272,7 @@ class ContactStore:
 
     @staticmethod
     def _row_to_contact(row) -> Contact:
+        keys = row.keys()
         return Contact(
             id=row["id"],
             phone_uid=row["phone_uid"],
@@ -263,9 +280,10 @@ class ContactStore:
             phone_number=row["phone_number"],
             phone_number_normalized=row["phone_number_normalized"],
             custom_name=row["custom_name"],
+            is_favorite=bool(row["is_favorite"]) if "is_favorite" in keys else False,
             last_synced=row["last_synced"],
             raw_vcard=row["raw_vcard"],
-            photo_data=row["photo_data"] if "photo_data" in row.keys() else None,
+            photo_data=row["photo_data"] if "photo_data" in keys else None,
         )
 
     # ── Call log ──────────────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ from PyQt6.QtGui import QColor, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
     QInputDialog, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QVBoxLayout, QWidget, QScrollArea,
 )
 
 from contacts.models import Contact, CallLog
@@ -240,6 +240,235 @@ class ContactProfileDialog(QDialog):
                 self._contact.raw_vcard = None   # force re-read from DB
                 self._contact = self._store.get_contact_by_id(self._contact.id)
             self._load_avatar()
+        except Exception as e:
+            logger.warning("Failed to load photo: %s", e)
+
+
+# ── Inline panel (used in split-view contacts tab) ───────────────────────────
+
+class ContactProfilePanel(QWidget):
+    """Inline contact profile — shown on the right side of the contacts split view."""
+
+    dial_requested = pyqtSignal(str)
+    contact_changed = pyqtSignal()   # emitted after rename / photo change
+
+    _AVATAR_SIZE = 72
+
+    def __init__(self, store: ContactStore, dial_cb=None, parent=None):
+        super().__init__(parent)
+        self._store = store
+        self._dial_cb = dial_cb
+        self._contact: Optional[Contact] = None
+        self._number: str = ""
+        self._build_ui()
+        self._show_placeholder()
+
+    back_requested = pyqtSignal()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(10)
+
+        # Back button
+        btn_back = QPushButton("← Back")
+        btn_back.setFixedWidth(80)
+        btn_back.clicked.connect(self.back_requested)
+        root.addWidget(btn_back, 0, Qt.AlignmentFlag.AlignLeft)
+
+        # Avatar
+        self._avatar_label = QLabel()
+        self._avatar_label.setFixedSize(self._AVATAR_SIZE, self._AVATAR_SIZE)
+        self._avatar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(self._avatar_label, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        # Name
+        self._name_label = QLabel()
+        self._name_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._name_label.setWordWrap(True)
+        self._name_label.setStyleSheet("font-size: 15px; font-weight: bold;")
+        root.addWidget(self._name_label)
+
+        # Number
+        self._num_label = QLabel()
+        self._num_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._num_label.setStyleSheet("font-size: 12px; color: #9aa0a6;")
+        root.addWidget(self._num_label)
+
+        # Action buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        self._btn_call = QPushButton("Call")
+        self._btn_call.setStyleSheet(
+            "background: #34a853; color: white; border-radius: 6px; padding: 6px 12px;"
+        )
+        self._btn_call.clicked.connect(self._on_call)
+        btn_row.addWidget(self._btn_call)
+
+        self._btn_fav = QPushButton("☆")
+        self._btn_fav.setFixedWidth(36)
+        self._btn_fav.setToolTip("Add to favourites")
+        self._btn_fav.clicked.connect(self._on_toggle_favorite)
+        btn_row.addWidget(self._btn_fav)
+
+        self._btn_edit = QPushButton("Edit name")
+        self._btn_edit.clicked.connect(self._on_edit_name)
+        btn_row.addWidget(self._btn_edit)
+
+        self._btn_photo = QPushButton("Photo")
+        self._btn_photo.clicked.connect(self._on_change_photo)
+        btn_row.addWidget(self._btn_photo)
+        root.addLayout(btn_row)
+
+        # Call history
+        hist_lbl = _section("Call history")
+        root.addWidget(hist_lbl)
+
+        self._history_list = QListWidget()
+        self._history_list.setFrameShape(QListWidget.Shape.NoFrame)
+        self._history_list.setStyleSheet(
+            "QListWidget::item { padding: 4px 2px; border-bottom: 1px solid rgba(127,127,127,0.15); }"
+        )
+        root.addWidget(self._history_list, 1)
+
+        self._placeholder = QLabel("Select a contact")
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder.setStyleSheet("color: #9aa0a6; font-size: 13px;")
+        root.addWidget(self._placeholder)
+
+    def load_contact(self, contact: Optional[Contact], number: str = ""):
+        self._contact = contact
+        self._number = number or (contact.phone_number if contact else "")
+        if not self._contact and not self._number:
+            self._show_placeholder()
+            return
+        self._placeholder.setVisible(False)
+        self._avatar_label.setVisible(True)
+        self._name_label.setVisible(True)
+        self._num_label.setVisible(True)
+        self._btn_call.setVisible(True)
+        self._btn_fav.setVisible(True)
+        self._btn_edit.setVisible(True)
+        self._btn_photo.setVisible(True)
+        self._history_list.setVisible(True)
+
+        self._name_label.setText(contact.effective_name if contact else self._number)
+        self._num_label.setText(self._number)
+        self._update_fav_btn()
+        self._load_avatar()
+        self._load_history()
+
+    def _show_placeholder(self):
+        self._avatar_label.setVisible(False)
+        self._name_label.setVisible(False)
+        self._num_label.setVisible(False)
+        self._btn_call.setVisible(False)
+        self._btn_fav.setVisible(False)
+        self._btn_edit.setVisible(False)
+        self._btn_photo.setVisible(False)
+        self._history_list.setVisible(False)
+        self._placeholder.setVisible(True)
+
+    def _load_avatar(self):
+        photo_bytes = None
+        if self._contact and self._contact.photo_data:
+            photo_bytes = self._contact.photo_data
+        elif self._contact and self._contact.raw_vcard:
+            photo_bytes = _extract_vcard_photo(self._contact.raw_vcard)
+        s = self._AVATAR_SIZE
+        if photo_bytes:
+            px = QPixmap()
+            if px.loadFromData(photo_bytes):
+                px = px.scaled(s, s, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                               Qt.TransformationMode.SmoothTransformation)
+                self._avatar_label.setPixmap(px.copy(0, 0, s, s))
+                self._avatar_label.setStyleSheet(f"border-radius: {s//2}px;")
+                return
+        initials = _initials(self._contact.effective_name if self._contact else self._number)
+        self._avatar_label.setText(initials)
+        self._avatar_label.setStyleSheet(
+            f"border-radius: {s//2}px; background: #3c4043; border: 2px solid #5f6368;"
+            "font-size: 24px; font-weight: bold; color: white;"
+        )
+
+    def _load_history(self):
+        self._history_list.clear()
+        if not self._number:
+            return
+        contact_id = self._contact.id if self._contact else None
+        entries = self._store.get_call_log_for_number(self._number, limit=30, contact_id=contact_id)
+        if not entries:
+            item = QListWidgetItem("No call history")
+            item.setForeground(QColor("#5f6368"))
+            self._history_list.addItem(item)
+            return
+        for e in entries:
+            icon  = {"incoming": "↙", "outgoing": "↗", "missed": "✗"}.get(e.direction, "?")
+            color = {"incoming": "#34a853", "outgoing": "#1a73e8", "missed": "#ea4335"}.get(e.direction, "#9aa0a6")
+            try:
+                dt = datetime.fromisoformat(e.started_at.replace("Z", "+00:00"))
+                ts = dt.astimezone().strftime("%d %b  %H:%M")
+            except Exception:
+                ts = e.started_at[:10]
+            if e.duration_sec >= 60:
+                dur = f"{e.duration_sec // 60}m {e.duration_sec % 60:02d}s"
+            elif e.duration_sec > 0:
+                dur = f"{e.duration_sec}s"
+            else:
+                dur = "—"
+            item = QListWidgetItem(f"{icon}  {ts}  {dur}")
+            item.setForeground(QColor(color))
+            self._history_list.addItem(item)
+
+    def _update_fav_btn(self):
+        is_fav = self._contact.is_favorite if self._contact else False
+        self._btn_fav.setText("★" if is_fav else "☆")
+        self._btn_fav.setToolTip("Remove from favourites" if is_fav else "Add to favourites")
+        self._btn_fav.setStyleSheet(
+            "color: #f0a500; font-size: 16px;" if is_fav else "font-size: 16px;"
+        )
+
+    def _on_toggle_favorite(self):
+        if not self._contact or not self._contact.id:
+            return
+        new_state = self._store.toggle_favorite(self._contact.id)
+        self._contact = self._store.get_contact_by_id(self._contact.id)
+        self._update_fav_btn()
+        self.contact_changed.emit()
+
+    def _on_call(self):
+        if self._number:
+            if self._dial_cb:
+                self._dial_cb(self._number)
+            else:
+                self.dial_requested.emit(self._number)
+
+    def _on_edit_name(self):
+        if not self._contact:
+            return
+        current = self._contact.custom_name or self._contact.display_name
+        new_name, ok = QInputDialog.getText(self, "Edit Name", "Name:", text=current)
+        if ok and new_name.strip():
+            self._store.rename_contact(self._contact.id, new_name.strip())
+            self._contact = self._store.get_contact_by_id(self._contact.id)
+            self._name_label.setText(self._contact.effective_name)
+            self.contact_changed.emit()
+
+    def _on_change_photo(self):
+        if not self._contact:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Photo", "", "Images (*.png *.jpg *.jpeg *.bmp *.webp)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            self._store.set_contact_photo(self._contact.id, data)
+            self._contact = self._store.get_contact_by_id(self._contact.id)
+            self._load_avatar()
+            self.contact_changed.emit()
         except Exception as e:
             logger.warning("Failed to load photo: %s", e)
 

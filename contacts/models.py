@@ -15,6 +15,7 @@ class Contact:
     phone_number: str = ""       # Primary phone number (raw)
     phone_number_normalized: str = ""  # E.164-like, digits only
     custom_name: Optional[str] = None  # User-set rename; overrides display_name
+    is_favorite: bool = False
     last_synced: Optional[str] = None
     raw_vcard: Optional[str] = None
     photo_data: Optional[bytes] = None  # User-uploaded photo (overrides vCard photo)

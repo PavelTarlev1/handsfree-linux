@@ -7,16 +7,16 @@ import logging
 from typing import Callable, Optional
 
 from PyQt6.QtCore import Qt, QSize, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPixmap
+from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPainterPath, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog,
     QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
 from contacts.models import Contact
 from contacts.store import ContactStore
-from ui.contact_profile import ContactProfileDialog
+from ui.contact_profile import ContactProfileDialog, ContactProfilePanel
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +113,18 @@ class _ContactRow(QWidget):
         avatar.setFixedSize(_AVATAR_SIZE, _AVATAR_SIZE)
         layout.addWidget(avatar)
 
-        # Name only
+        # Name + optional favourite star
         name_lbl = QLabel(contact.effective_name)
         name_lbl.setStyleSheet("background: transparent; border: none;")
         font = name_lbl.font()
         font.setPointSize(11)
         name_lbl.setFont(font)
         layout.addWidget(name_lbl, 1)
+
+        if contact.is_favorite:
+            star = QLabel("★")
+            star.setStyleSheet("color: #f0a500; background: transparent; border: none; font-size: 14px;")
+            layout.addWidget(star)
 
 
 class ContactsWidget(QWidget):
@@ -136,16 +141,27 @@ class ContactsWidget(QWidget):
         self.refresh()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(1)
+        splitter.setChildrenCollapsible(True)
+
+        # ── Left: list pane ───────────────────────────────────────────────────
+        left = QWidget()
+        layout = QVBoxLayout(left)
         layout.setContentsMargins(0, 10, 0, 0)
         layout.setSpacing(4)
 
-        # Search bar
         search_row = QHBoxLayout()
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search contacts…")
         self._search.textChanged.connect(self._on_search)
         search_row.addWidget(self._search)
+
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._focus_search)
         btn_refresh = QPushButton("Sync")
         btn_refresh.setToolTip("Sync contacts from phone via PBAP")
         btn_refresh.setFixedWidth(60)
@@ -153,12 +169,10 @@ class ContactsWidget(QWidget):
         search_row.addWidget(btn_refresh)
         layout.addLayout(search_row)
 
-        # Count label
         self._count_label = QLabel("0 contacts")
         self._count_label.setObjectName("hintLabel")
         layout.addWidget(self._count_label)
 
-        # List — no separators, no box border
         self._list = QListWidget()
         self._list.setSpacing(2)
         self._list.setFrameShape(QListWidget.Shape.NoFrame)
@@ -179,13 +193,27 @@ class ContactsWidget(QWidget):
         self._list.itemClicked.connect(self._on_click)
         layout.addWidget(self._list)
 
-        # Bottom action buttons
         btn_row = QHBoxLayout()
         btn_add = QPushButton("Add Contact")
         btn_add.clicked.connect(self._on_add_contact)
         btn_row.addWidget(btn_add)
         btn_row.addStretch()
         layout.addLayout(btn_row)
+
+        splitter.addWidget(left)
+
+        # ── Right: profile panel ──────────────────────────────────────────────
+        self._profile_panel = ContactProfilePanel(
+            store=self._store, dial_cb=self._dial_cb
+        )
+        self._profile_panel.contact_changed.connect(self.refresh)
+        self._profile_panel.back_requested.connect(self._on_back)
+        splitter.addWidget(self._profile_panel)
+
+        self._splitter = splitter
+        self._profile_panel.hide()
+        splitter.setSizes([500, 0])
+        root.addWidget(splitter)
 
     def refresh(self):
         query = self._search.text().strip()
@@ -212,20 +240,21 @@ class ContactsWidget(QWidget):
 
     # ── Interactions ──────────────────────────────────────────────────────────
 
+    def _focus_search(self):
+        self._search.setFocus()
+        self._search.selectAll()
+
+    def _on_back(self):
+        self._profile_panel.hide()
+        self._splitter.setSizes([500, 0])
+        self._list.clearSelection()
+
     def _on_click(self, item: QListWidgetItem):
         contact = self._contact_from_item(item)
         if contact:
-            self._open_profile(contact)
-
-    def _open_profile(self, contact: Contact):
-        dlg = ContactProfileDialog(
-            store=self._store,
-            dial_cb=self._dial_cb,
-            contact=contact,
-            parent=self,
-        )
-        dlg.exec()
-        self.refresh()
+            self._profile_panel.show()
+            self._profile_panel.load_contact(contact)
+            self._splitter.setSizes([190, 310])
 
     # ── Context menu ──────────────────────────────────────────────────────────
 
@@ -239,6 +268,9 @@ class ContactsWidget(QWidget):
         act_profile = menu.addAction("Open profile")
         act_dial    = menu.addAction(f"Call {contact.effective_name}")
         menu.addSeparator()
+        fav_label   = "★  Remove from favourites" if contact.is_favorite else "☆  Add to favourites"
+        act_fav     = menu.addAction(fav_label)
+        menu.addSeparator()
         act_rename  = menu.addAction("Rename…")
         act_clear   = menu.addAction("Clear custom name") if contact.custom_name else None
         menu.addSeparator()
@@ -246,9 +278,14 @@ class ContactsWidget(QWidget):
 
         action = menu.exec(self._list.mapToGlobal(pos))
         if action == act_profile:
-            self._open_profile(contact)
+            self._profile_panel.show()
+            self._profile_panel.load_contact(contact)
+            self._splitter.setSizes([190, 310])
         elif action == act_dial:
             self.dial_requested.emit(contact.phone_number)
+        elif action == act_fav:
+            self._store.toggle_favorite(contact.id)
+            self.refresh()
         elif action == act_rename:
             self._rename_contact(contact)
         elif act_clear and action == act_clear:

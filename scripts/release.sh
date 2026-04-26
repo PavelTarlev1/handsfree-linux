@@ -2,7 +2,8 @@
 # HandsFree — create a new release tarball and push a git tag
 set -e
 
-CURRENT=$(cat VERSION)
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+CURRENT=$(cat "$SCRIPT_DIR/VERSION")
 echo "Current version: $CURRENT"
 echo
 read -p "New version (e.g. 1.1.0): " VERSION
@@ -13,19 +14,18 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 # Bump VERSION file
-echo "$VERSION" > VERSION
+echo "$VERSION" > "$SCRIPT_DIR/VERSION"
 echo "Bumped VERSION to $VERSION"
 
 # Commit and tag
-git add VERSION
-git commit -m "chore: bump version to $VERSION"
-git tag "v$VERSION"
-git push
-git push origin "v$VERSION"
+git -C "$SCRIPT_DIR" add VERSION
+git -C "$SCRIPT_DIR" commit -m "chore: bump version to $VERSION"
+git -C "$SCRIPT_DIR" tag "v$VERSION"
+git -C "$SCRIPT_DIR" push
+git -C "$SCRIPT_DIR" push origin "v$VERSION"
 echo "Pushed tag v$VERSION"
 
 # Build tarball
-SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PARENT="$(dirname "$SCRIPT_DIR")"
 TARBALL="$PARENT/handsfree-linux.tar.gz"
 

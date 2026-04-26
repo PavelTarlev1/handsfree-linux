@@ -5,6 +5,14 @@ Your phone connects via HFP (Hands-Free Profile) and HandsFree handles calls, co
 
 ---
 
+## Screenshots
+
+| Contacts | Dial | Settings | Tray |
+|---|---|---|---|
+| ![Contacts](docs/screenshots/contacts.png) | ![Dial](docs/screenshots/dial.png) | ![Settings](docs/screenshots/settings.png) | ![Tray](docs/screenshots/tray.png) |
+
+---
+
 ## Features
 
 - **Incoming & outgoing calls** — answer, decline, or dial from your computer

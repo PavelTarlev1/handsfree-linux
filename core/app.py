@@ -116,8 +116,10 @@ class HandsFreeApp(QObject):
         self._window.theme_changed.connect(self._on_theme_changed)
         self._window.hangup_requested.connect(self._on_hangup)
         self._window.mute_requested.connect(self._on_mute_requested)
+        self._window.mute_btn_clicked.connect(self._on_statusbar_mute_clicked)
 
         # Tray signals → app
+        self._tray.mute_changed.connect(self._on_tray_mute_changed)
         self._tray.action_show_window.connect(self._toggle_window)
         self._tray.action_connect.connect(self._window.show)
         self._tray.action_disconnect.connect(self._on_disconnect_requested)
@@ -361,7 +363,8 @@ class HandsFreeApp(QObject):
         self._popup.rejected.connect(self._on_reject)
         self._popup.show()
 
-        self._ringer.start(self._ringer.INCOMING)
+        if not self._tray.is_muted():
+            self._ringer.start(self._ringer.INCOMING)
         self._tray.set_in_call(number)
 
         # Log as incoming; start_time is set only when the call becomes active
@@ -415,6 +418,7 @@ class HandsFreeApp(QObject):
                 self._store.update_call_duration(self._call_log_id, duration)
             else:
                 self._store.update_call_direction(self._call_log_id, "missed")
+                self._tray.add_missed_call()
 
             # Back-fill contact_id if it was missing at ring/dial time
             number = self._ring_number or self._last_dialled
@@ -584,6 +588,17 @@ class HandsFreeApp(QObject):
     def _on_mute_requested(self, muted: bool):
         self._audio.mute_microphone(muted)
 
+    @pyqtSlot(bool)
+    def _on_tray_mute_changed(self, muted: bool):
+        logger.info("Notifications %s", "muted" if muted else "unmuted")
+        self._window.set_muted(muted)
+
+    def _on_statusbar_mute_clicked(self):
+        if self._tray.is_muted():
+            self._tray._unmute()
+        else:
+            self._tray._mute_indefinitely()
+
     @pyqtSlot(str)
     def _on_dial_requested(self, number: str):
         if not self._hfp or not self._current_device_path:
@@ -723,6 +738,7 @@ class HandsFreeApp(QObject):
             self._window.show()
             self._window.raise_()
             self._window.activateWindow()
+            self._tray.clear_missed_calls()
 
     def _refresh_devices(self):
         # Run D-Bus device enumeration in a thread — doing it on the Qt main
