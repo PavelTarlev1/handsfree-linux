@@ -32,3 +32,19 @@ config.toml
 *.wav
 *.pcm
 *.raw
+
+# Secrets / personal info
+.env
+.env.*
+*.token
+*.secret
+secrets.toml
+secrets.json
+gh_token
+*_token.txt
+*.pem
+*.key
+id_rsa
+id_ed25519
+*.p12
+*.pfx
