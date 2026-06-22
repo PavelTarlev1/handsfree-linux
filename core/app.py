@@ -36,7 +36,8 @@ class _Bridge(QObject):
     Thin Qt object used to cross thread boundaries safely.
     All signals are declared here; slots execute on the Qt main thread.
     """
-    sig_connecting = pyqtSignal(str)        # device_name being dialled
+    sig_connecting = pyqtSignal(str)        # device_name
+    sig_connect_failed = pyqtSignal()       # connection attempt failed being dialled
     sig_connected = pyqtSignal(str, str)    # device_path, device_name
     sig_disconnected = pyqtSignal(str)      # device_path
     sig_ring = pyqtSignal(str)              # caller_number
@@ -47,8 +48,10 @@ class _Bridge(QObject):
     sig_voip_ended = pyqtSignal()
     sig_sync_started = pyqtSignal()
     sig_sync_done = pyqtSignal(int)         # number of contacts synced
+    sig_sync_error = pyqtSignal(str)        # human-readable error message
     sig_devices_ready = pyqtSignal(object)  # list[dict] of paired devices
     sig_dial_error = pyqtSignal()
+    sig_bt_powered = pyqtSignal(bool)       # True = adapter on, False = off
 
 
 class HandsFreeApp(QObject):
@@ -75,6 +78,7 @@ class HandsFreeApp(QObject):
         self._popup = None
         self._call_log_id: Optional[int] = None
         self._reconnect_timer: Optional[threading.Timer] = None
+        self._manual_disconnect: bool = False  # suppress auto-reconnect after user-initiated disconnect
         self._call_start_time: Optional[float] = None
         self._call_was_active: bool = False   # True once _on_call_active fires
 
@@ -110,6 +114,8 @@ class HandsFreeApp(QObject):
         self._window.sync_requested.connect(self._trigger_pbap_sync)
         self._window.connect_requested.connect(self._on_connect_device_requested)
         self._window.disconnect_requested.connect(self._on_disconnect_requested)
+        self._window.bt_power_on_requested.connect(self._on_bt_power_on_requested)
+        self._window.bt_power_off_requested.connect(self._on_bt_power_off_requested)
         self._window.audio_output_changed.connect(self._on_audio_output_changed)
         self._window.audio_input_changed.connect(self._on_audio_input_changed)
         self._window.volume_changed.connect(self._on_volume_changed)
@@ -142,6 +148,7 @@ class HandsFreeApp(QObject):
         b = self._bridge
         b.sig_connected.connect(self._on_connected)
         b.sig_connecting.connect(self._window.on_connecting)
+        b.sig_connect_failed.connect(self._window.on_disconnected)
         b.sig_disconnected.connect(self._on_disconnected)
         b.sig_ring.connect(self._on_ring)
         b.sig_call_active.connect(self._on_call_active)
@@ -151,8 +158,10 @@ class HandsFreeApp(QObject):
         b.sig_voip_ended.connect(self._on_voip_ended)
         b.sig_sync_started.connect(self._window.on_sync_started)
         b.sig_sync_done.connect(self._on_sync_done)
+        b.sig_sync_error.connect(self._on_sync_error)
         b.sig_devices_ready.connect(self._window.set_devices)
         b.sig_dial_error.connect(self._on_dial_error)
+        b.sig_bt_powered.connect(self._window.on_bt_powered)
 
     def _start_bluetooth(self):
         if platform.system() != "Linux":
@@ -171,6 +180,7 @@ class HandsFreeApp(QObject):
                 on_call_active=self._cb_call_active,
                 on_codec_negotiated=self._cb_codec,
                 on_dial_error=self._cb_dial_error,
+                on_bt_powered=self._cb_bt_powered,
             )
             self._hfp.start()
         except Exception as e:
@@ -212,6 +222,14 @@ class HandsFreeApp(QObject):
             return True
         logger.debug("Skipping PBAP sync — synced recently")
         return False
+
+    def _cb_bt_powered(self, powered: bool):
+        self._bridge.sig_bt_powered.emit(powered)
+        if not powered:
+            # Cancel any pending reconnect — there's no adapter to reconnect with
+            if self._reconnect_timer:
+                self._reconnect_timer.cancel()
+                self._reconnect_timer = None
 
     def _cb_disconnected(self, device_path: str):
         self._bridge.sig_disconnected.emit(device_path)
@@ -309,8 +327,11 @@ class HandsFreeApp(QObject):
             self._current_device_name = None
             self._tray.set_disconnected()
             self._window.on_disconnected()
-            logger.info("Disconnected from %s — auto-reconnecting in 3s", name)
-            self._schedule_reconnect(device_path)
+            if self._manual_disconnect:
+                logger.info("Disconnected from %s (manual — auto-reconnect suppressed)", name)
+            else:
+                logger.info("Disconnected from %s — auto-reconnecting in 3s", name)
+                self._schedule_reconnect(device_path)
 
     def _schedule_reconnect(self, device_path: str):
         """Auto-reconnect after a short delay (handles iOS idle drops)."""
@@ -569,6 +590,14 @@ class HandsFreeApp(QObject):
             f"{count} contact{'s' if count != 1 else ''} updated from phone",
         )
 
+    @pyqtSlot(str)
+    def _on_sync_error(self, message: str):
+        dlg = QMessageBox(self._window)
+        dlg.setWindowTitle("Contact sync failed")
+        dlg.setIcon(QMessageBox.Icon.Warning)
+        dlg.setText(message)
+        dlg.exec()
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _on_answer(self):
@@ -669,6 +698,7 @@ class HandsFreeApp(QObject):
         """User clicked Connect — ask BlueZ to connect to the device."""
         if not self._hfp:
             return
+        self._manual_disconnect = False  # user is actively connecting again
         # Emit connecting signal with device name for UI feedback
         name = next(
             (d["name"] for d in self._hfp.get_paired_devices() if d["path"] == device_path),
@@ -683,33 +713,112 @@ class HandsFreeApp(QObject):
         ).start()
 
     def _connect_device_thread(self, device_path: str):
-        # Use bluetoothctl instead of D-Bus directly — dbus-python is not
-        # thread-safe and calling Connect() from a worker thread deadlocks
-        # the GLib main loop, freezing the UI for ~25 s.
-        address = device_path.split("/")[-1].replace("dev_", "").replace("_", ":")
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["bluetoothctl", "connect", address],
-                timeout=30,
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
+        # Use gdbus ConnectProfile for HFP specifically — generic Connect()
+        # returns immediately if BLE is already up (iPhone), so HFP never opens.
+        # gdbus avoids the dbus-python threading deadlock issue.
+        HFP_AG_UUID = "0000111f-0000-1000-8000-00805f9b34fb"
+        import subprocess
+
+        for attempt in range(3):
+            try:
+                result = subprocess.run(
+                    [
+                        "gdbus", "call", "--system",
+                        "--dest", "org.bluez",
+                        "--object-path", device_path,
+                        "--method", "org.bluez.Device1.ConnectProfile",
+                        HFP_AG_UUID,
+                    ],
+                    timeout=15,
+                    capture_output=True,
+                    text=True,
+                )
                 output = (result.stdout + result.stderr).strip()
-                if "AlreadyConnected" in output or "br-connection-busy" in output:
-                    logger.debug("bluetoothctl connect: %s (may have succeeded)", output)
-                else:
-                    logger.error("bluetoothctl connect failed: %s", output)
-        except subprocess.TimeoutExpired:
-            logger.warning("bluetoothctl connect timed out for %s", address)
-        except Exception as e:
-            logger.error("Connect failed: %s", e)
+                if result.returncode == 0:
+                    logger.debug("HFP ConnectProfile succeeded")
+                    return
+                if "AlreadyConnected" in output or "AlreadyExists" in output:
+                    logger.debug("HFP ConnectProfile: already connected")
+                    return
+                if "InProgress" in output or "br-connection-busy" in output:
+                    # Phone is already mid-connection — wait and let it finish
+                    logger.debug("HFP ConnectProfile: in progress, waiting (attempt %d)", attempt + 1)
+                    time.sleep(3)
+                    continue
+                logger.error("HFP ConnectProfile failed: %s", output)
+                self._bridge.sig_connect_failed.emit()
+                return
+            except subprocess.TimeoutExpired:
+                logger.warning("HFP ConnectProfile timed out (attempt %d)", attempt + 1)
+
+        # All retries exhausted
+        self._bridge.sig_connect_failed.emit()
 
     @pyqtSlot()
+    @pyqtSlot()
+    def _on_bt_power_on_requested(self):
+        threading.Thread(target=self._power_on_bluetooth, daemon=True).start()
+
+    @pyqtSlot()
+    def _on_bt_power_off_requested(self):
+        threading.Thread(target=self._power_off_bluetooth, daemon=True).start()
+
+    def _power_off_bluetooth(self):
+        adapter = self._cfg.bluetooth.adapter
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            props = dbus.Interface(
+                bus.get_object("org.bluez", f"/org/bluez/{adapter}"),
+                "org.freedesktop.DBus.Properties",
+            )
+            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(False))
+            logger.info("Bluetooth adapter powered off")
+        except Exception as e:
+            logger.error("Could not power off Bluetooth: %s", e)
+
+    def _power_on_bluetooth(self):
+        adapter = self._cfg.bluetooth.adapter
+        try:
+            import dbus
+            bus = dbus.SystemBus()
+            props = dbus.Interface(
+                bus.get_object("org.bluez", f"/org/bluez/{adapter}"),
+                "org.freedesktop.DBus.Properties",
+            )
+            props.Set("org.bluez.Adapter1", "Powered", dbus.Boolean(True))
+            logger.info("Bluetooth adapter powered on")
+        except Exception as e:
+            logger.warning("D-Bus power on failed (%s), trying fallbacks", e)
+            import subprocess
+            # rfkill unblock (works on all systemd + non-systemd distros)
+            try:
+                subprocess.run(["rfkill", "unblock", "bluetooth"],
+                               capture_output=True, timeout=5)
+            except Exception:
+                pass
+            # bluetoothctl power on — available on any distro with BlueZ
+            try:
+                subprocess.run(
+                    ["bluetoothctl", "power", "on"],
+                    capture_output=True, timeout=8,
+                )
+                logger.info("Bluetooth enabled via bluetoothctl")
+                return
+            except Exception:
+                pass
+            # Last resort: hciconfig (deprecated but still present on most distros)
+            try:
+                subprocess.run(["hciconfig", adapter, "up"],
+                               capture_output=True, timeout=5)
+                logger.info("Bluetooth enabled via hciconfig")
+            except Exception as e2:
+                logger.error("Could not power on Bluetooth: %s", e2)
+
     def _on_disconnect_requested(self):
         if not self._hfp or not self._current_device_path:
             return
+        self._manual_disconnect = True
         path = self._current_device_path
         threading.Thread(
             target=self._disconnect_device_thread,
@@ -801,7 +910,7 @@ class HandsFreeApp(QObject):
             return
         try:
             self._bridge.sig_sync_started.emit()
-            # Small delay so the HFP SLC can fully settle before PBAP starts
+            # Allow HFP SLC to settle before PBAP starts
             time.sleep(2)
 
             address = ""
@@ -814,33 +923,80 @@ class HandsFreeApp(QObject):
                 logger.warning("PBAP sync: could not find address for %s", device_path)
                 return
 
-            from bluetooth.pbap_client import PBAPClient
-            client = PBAPClient()
-            try:
-                if not client.connect(address):
-                    return
+            from bluetooth.pbap_client import PBAPClient, PBAPUnauthorizedError, PBAPPullError
 
-                # ── Contacts ──────────────────────────────────────────────
-                contacts = client.pull_all_contacts()
-                count = 0
-                for c in contacts:
-                    self._store.upsert_contact(c)
-                    count += 1
-                logger.info("PBAP: synced %d contacts", count)
+            MAX_ATTEMPTS = 3
+            last_error: str = ""
 
-                # ── Call history ───────────────────────────────────────────
-                call_entries = client.pull_call_logs()
-                new_calls = 0
-                for entry in call_entries:
-                    if self._store.upsert_call_log(entry):
-                        new_calls += 1
-                if new_calls:
-                    logger.info("PBAP: imported %d new call log entries from phone", new_calls)
-                    self._bridge.sig_sync_done.emit(count)   # refresh UI
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                client = PBAPClient()
+                try:
+                    # ── Connect ───────────────────────────────────────────
+                    try:
+                        connected = client.connect(address)
+                    except PBAPUnauthorizedError:
+                        self._bridge.sig_sync_error.emit(
+                            "Your phone denied contact access.\n\n"
+                            "• iPhone: Settings → Bluetooth → tap ⓘ next to your computer → enable Sync Contacts\n"
+                            "• Android: accept the contacts permission popup on your phone"
+                        )
+                        return  # Auth failure — no point retrying
 
-                self._last_sync_time = time.monotonic()
-                self._bridge.sig_sync_done.emit(count)
-            finally:
-                client.disconnect()
+                    if not connected or not client._session_path:
+                        last_error = "Could not create PBAP session"
+                        logger.warning("PBAP attempt %d/%d: %s", attempt, MAX_ATTEMPTS, last_error)
+                        continue
+
+                    # ── Contacts ──────────────────────────────────────────
+                    try:
+                        contacts = client.pull_all_contacts()
+                    except PBAPUnauthorizedError:
+                        self._bridge.sig_sync_error.emit(
+                            "Your phone denied contact access.\n\n"
+                            "• iPhone: Settings → Bluetooth → tap ⓘ next to your computer → enable Sync Contacts\n"
+                            "• Android: accept the contacts permission popup on your phone"
+                        )
+                        return
+                    except PBAPPullError as e:
+                        last_error = str(e)
+                        logger.warning("PBAP attempt %d/%d failed: %s", attempt, MAX_ATTEMPTS, e)
+                        continue
+
+                    count = 0
+                    for c in contacts:
+                        self._store.upsert_contact(c)
+                        count += 1
+                    logger.info("PBAP: synced %d contacts", count)
+
+                    # ── Call history ───────────────────────────────────────
+                    try:
+                        call_entries = client.pull_call_logs()
+                        new_calls = sum(1 for e in call_entries if self._store.upsert_call_log(e))
+                        if new_calls:
+                            logger.info("PBAP: imported %d new call log entries", new_calls)
+                    except Exception as e:
+                        logger.warning("PBAP: call log sync failed (non-fatal): %s", e)
+
+                    self._last_sync_time = time.monotonic()
+                    self._bridge.sig_sync_done.emit(count)
+                    return  # ── success ──
+
+                except Exception as e:
+                    last_error = str(e)
+                    logger.warning("PBAP attempt %d/%d unexpected error: %s", attempt, MAX_ATTEMPTS, e)
+                finally:
+                    client.disconnect()
+
+                if attempt < MAX_ATTEMPTS:
+                    time.sleep(3 * attempt)  # 3s, 6s backoff
+
+            # All attempts exhausted
+            logger.error("PBAP sync failed after %d attempts: %s", MAX_ATTEMPTS, last_error)
+            self._bridge.sig_sync_error.emit(
+                "Could not sync contacts after 3 attempts.\n\n"
+                "• iPhone: Settings → Bluetooth → tap ⓘ next to your computer → enable Sync Contacts\n"
+                "• Android: accept the contacts permission popup on your phone\n\n"
+                f"Error: {last_error}"
+            )
         finally:
             self._pbap_lock.release()

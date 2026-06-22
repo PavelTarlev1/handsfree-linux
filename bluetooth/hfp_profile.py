@@ -41,6 +41,7 @@ class HfpProfileManager:
         on_call_active: Optional[Callable] = None,
         on_codec_negotiated: Optional[Callable] = None,
         on_dial_error: Optional[Callable] = None,
+        on_bt_powered: Optional[Callable] = None,   # called with True/False
     ):
         self._adapter = adapter
         self._preferred_codec = preferred_codec
@@ -52,6 +53,7 @@ class HfpProfileManager:
         self._on_call_active = on_call_active
         self._on_codec_negotiated = on_codec_negotiated
         self._on_dial_error = on_dial_error
+        self._on_bt_powered = on_bt_powered
 
         self._connections: dict[str, object] = {}   # device_path → SLCConnection
         self._loop = None
@@ -78,10 +80,48 @@ class HfpProfileManager:
             self._loop = GLib.MainLoop()
 
             self._register_profile()
+            self._watch_adapter_power()
             logger.info("GLib main loop starting")
             self._loop.run()
         except Exception as e:
             logger.exception("D-Bus/GLib thread error: %s", e)
+
+    def _watch_adapter_power(self):
+        """Subscribe to BlueZ adapter Powered property changes."""
+        try:
+            import dbus
+
+            adapter_path = f"/org/bluez/{self._adapter}"
+
+            # Emit the initial power state immediately
+            try:
+                props_iface = dbus.Interface(
+                    self._bus.get_object("org.bluez", adapter_path),
+                    "org.freedesktop.DBus.Properties",
+                )
+                powered = bool(props_iface.Get("org.bluez.Adapter1", "Powered"))
+                if self._on_bt_powered:
+                    self._on_bt_powered(powered)
+            except Exception as e:
+                logger.debug("Could not read initial adapter power state: %s", e)
+
+            def _on_properties_changed(interface, changed, invalidated, path=None):
+                if interface != "org.bluez.Adapter1":
+                    return
+                if "Powered" in changed and self._on_bt_powered:
+                    powered = bool(changed["Powered"])
+                    logger.info("Bluetooth adapter %s", "powered on" if powered else "powered off")
+                    self._on_bt_powered(powered)
+
+            self._bus.add_signal_receiver(
+                _on_properties_changed,
+                signal_name="PropertiesChanged",
+                dbus_interface="org.freedesktop.DBus.Properties",
+                path=adapter_path,
+                path_keyword="path",
+            )
+        except Exception as e:
+            logger.debug("Could not watch adapter power: %s", e)
 
     def _register_profile(self):
         import dbus
@@ -126,8 +166,58 @@ class HfpProfileManager:
                     "HFP profile already registered (WirePlumber conflict?). "
                     "See docs/wireplumber-setup.md to disable WirePlumber HFP."
                 )
+            elif "NotPermitted" in error_name:
+                logger.error(
+                    "HFP UUID already claimed by another process. "
+                    "Ensure WirePlumber hfp_hf role is disabled: "
+                    "see ~/.config/wireplumber/bluetooth.lua.d/50-bluez-config.lua"
+                )
             else:
                 logger.error("Failed to register HFP profile: %s", e)
+
+    def _stop_wireplumber_and_retry(self, profile_manager, options):
+        import subprocess
+        import time
+        import dbus
+
+        result = subprocess.run(
+            ["systemctl", "--user", "stop", "wireplumber"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            logger.error(
+                "Failed to stop WirePlumber: %s. "
+                "Run 'systemctl --user stop wireplumber' manually.",
+                result.stderr.strip(),
+            )
+            return
+
+        logger.info("WirePlumber stopped. Retrying HFP registration...")
+        time.sleep(1)
+
+        try:
+            profile_manager.RegisterProfile(
+                dbus.ObjectPath(PROFILE_DBUS_PATH),
+                dbus.String(HFP_HF_UUID),
+                options,
+            )
+            self._registered = True
+            logger.info("HFP HF profile registered after stopping WirePlumber.")
+        except Exception as e:
+            logger.error(
+                "HFP registration still failed after stopping WirePlumber: %s", e
+            )
+            return
+
+        # Restart WirePlumber so system audio keeps working.
+        # WirePlumber will try to re-register HFP and get AlreadyExists
+        # (our profile already holds the slot), so audio routing resumes
+        # without displacing our HFP handler.
+        subprocess.run(
+            ["systemctl", "--user", "start", "wireplumber"],
+            capture_output=True, text=True,
+        )
+        logger.info("WirePlumber restarted — system audio restored.")
 
     def stop(self):
         if self._loop:
@@ -213,7 +303,8 @@ class HfpProfileManager:
             return device_path.split("/")[-1]
 
     def get_paired_devices(self) -> list[dict]:
-        """Return list of paired Bluetooth devices (name + address)."""
+        """Return paired devices that support HFP (phones / car kits only)."""
+        HFP_AG_UUID = "0000111f-0000-1000-8000-00805f9b34fb"
         devices = []
         try:
             import dbus
@@ -225,13 +316,17 @@ class HfpProfileManager:
             for path, interfaces in objects.items():
                 if "org.bluez.Device1" in interfaces:
                     props = interfaces["org.bluez.Device1"]
-                    if props.get("Paired", False):
-                        devices.append({
-                            "path": str(path),
-                            "name": str(props.get("Alias", props.get("Name", "Unknown"))),
-                            "address": str(props.get("Address", "")),
-                            "connected": bool(props.get("Connected", False)),
-                        })
+                    if not props.get("Paired", False):
+                        continue
+                    uuids = [str(u).lower() for u in props.get("UUIDs", [])]
+                    if HFP_AG_UUID not in uuids:
+                        continue
+                    devices.append({
+                        "path": str(path),
+                        "name": str(props.get("Alias", props.get("Name", "Unknown"))),
+                        "address": str(props.get("Address", "")),
+                        "connected": bool(props.get("Connected", False)),
+                    })
         except Exception as e:
             logger.error("Failed to enumerate devices: %s", e)
         return devices

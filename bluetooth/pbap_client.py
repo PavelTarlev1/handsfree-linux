@@ -25,6 +25,14 @@ OBEX_BUS_NAME = "org.bluez.obex"
 OBEX_CLIENT_PATH = "/org/bluez/obex"
 
 
+class PBAPUnauthorizedError(Exception):
+    """Phone denied PBAP access (OBEX 0x41 Unauthorized)."""
+
+
+class PBAPPullError(Exception):
+    """PBAP session connected but pulling contacts failed."""
+
+
 class PBAPClient:
     """
     Pull contacts from a paired phone using PBAP over obexd.
@@ -47,6 +55,15 @@ class PBAPClient:
             self._session_bus = dbus.SessionBus()
         return self._session_bus
 
+    # Common obexd locations across distros
+    _OBEXD_PATHS = [
+        "obexd",                               # in PATH (Ubuntu, Debian)
+        "/usr/lib/bluetooth/obexd",            # Arch, Fedora, openSUSE
+        "/usr/libexec/bluetooth/obexd",        # some Fedora/RHEL layouts
+        "/usr/lib/obexd",                      # older systems
+        "/usr/local/lib/bluetooth/obexd",      # manually compiled
+    ]
+
     def _ensure_obexd(self) -> bool:
         """Start obexd if it's not already running."""
         try:
@@ -56,65 +73,90 @@ class PBAPClient:
         except Exception:
             pass
 
-        logger.info("obexd not running — attempting to start via systemctl --user")
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "start", "obex"],
-                capture_output=True, timeout=5
-            )
-            if result.returncode == 0:
-                time.sleep(1)  # Give obexd time to start
-                return True
-        except Exception:
-            pass
+        # Try systemd user session (Ubuntu/Fedora/Arch with systemd)
+        for service in ("obex", "obexd", "bluez-obexd"):
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "start", service],
+                    capture_output=True, timeout=5,
+                )
+                if result.returncode == 0:
+                    time.sleep(1)
+                    logger.info("obexd started via systemctl --user %s", service)
+                    return True
+            except Exception:
+                pass
 
-        # Try starting obexd directly
-        try:
-            subprocess.Popen(
-                ["obexd"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            time.sleep(1)
-            return True
-        except FileNotFoundError:
-            logger.error("obexd not found. Install: sudo apt install bluez-obexd")
-            return False
+        # Try launching obexd directly from known paths
+        for path in self._OBEXD_PATHS:
+            try:
+                subprocess.Popen(
+                    [path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                time.sleep(1)
+                logger.info("obexd started from %s", path)
+                return True
+            except FileNotFoundError:
+                continue
+            except Exception as e:
+                logger.debug("obexd launch failed (%s): %s", path, e)
+
+        logger.error(
+            "obexd not found. Install it: "
+            "Ubuntu/Debian: sudo apt install bluez-obexd  "
+            "Fedora: sudo dnf install bluez-obexd  "
+            "Arch: sudo pacman -S bluez-obex"
+        )
+        return False
 
     def connect(self, device_address: str) -> bool:
-        """Create a PBAP session to the device. Returns True on success."""
+        """
+        Create a PBAP session to the device. Returns True on success.
+        Tries with explicit SDP channel first, falls back to auto-discovery.
+        Raises PBAPUnauthorizedError on permanent auth denial.
+        """
         if not self._ensure_obexd():
             return False
-        try:
-            import dbus
-            bus = self._get_session_bus()
-            client = dbus.Interface(
-                bus.get_object(OBEX_BUS_NAME, OBEX_CLIENT_PATH),
-                "org.bluez.obex.Client1",
-            )
-            session_path = client.CreateSession(
-                device_address,
-                {"Target": dbus.String("PBAP")},
-            )
-            self._session_path = str(session_path)
-            bus = self._get_session_bus()
-            self._pbap_iface = dbus.Interface(
-                bus.get_object(OBEX_BUS_NAME, self._session_path),
-                "org.bluez.obex.PhonebookAccess1",
-            )
-            # Try both repository names — iOS uses "telecom", Android uses "int"
-            for repo in ("telecom", "int"):
-                try:
-                    self._pbap_iface.Select(repo, "pb")
-                    logger.info("PBAP session established (%s/pb): %s", repo, self._session_path)
-                    return True
-                except Exception as e:
-                    logger.debug("PBAP Select(%s, pb) failed: %s", repo, e)
-            logger.warning("PBAP Select failed for all repos — will try PullAll anyway")
-            return True
-        except Exception as e:
-            logger.error("PBAP connect failed: %s", e)
-            return False
+
+        import dbus
+        bus = self._get_session_bus()
+        obex_client = dbus.Interface(
+            bus.get_object(OBEX_BUS_NAME, OBEX_CLIENT_PATH),
+            "org.bluez.obex.Client1",
+        )
+
+        channel = self._find_pbap_channel(device_address)
+        # Try with explicit channel first, then fall back to auto-discovery
+        param_variants = []
+        if channel:
+            param_variants.append({"Target": dbus.String("PBAP"), "Channel": dbus.Byte(channel)})
+        param_variants.append({"Target": dbus.String("PBAP")})
+
+        last_err = None
+        for params in param_variants:
+            ch = params.get("Channel", "auto")
+            try:
+                session_path = obex_client.CreateSession(device_address, params)
+                self._session_path = str(session_path)
+                self._pbap_iface = dbus.Interface(
+                    bus.get_object(OBEX_BUS_NAME, self._session_path, introspect=False),
+                    "org.bluez.obex.PhonebookAccess1",
+                )
+                logger.info("PBAP session created (channel=%s): %s", ch, self._session_path)
+                return True
+            except Exception as e:
+                msg = str(e)
+                if "0x41" in msg or "Unauthorized" in msg:
+                    raise PBAPUnauthorizedError() from e
+                last_err = e
+                logger.debug("PBAP CreateSession (channel=%s) failed: %s", ch, e)
+                self._session_path = None
+                self._pbap_iface = None
+
+        logger.error("PBAP connect failed: %s", last_err)
+        return False
 
     def disconnect(self):
         if not self._session_path:
@@ -178,12 +220,23 @@ class PBAPClient:
                 tmp_path = f.name
 
             import dbus
-            # Use minimal options for maximum phone compatibility.
-            # No Field filters — some phones disconnect when filters are specified.
-            transfer_path, properties = self._pbap_iface.PullAll(
-                tmp_path,
-                {"Format": dbus.String("vcard30")},
-            )
+            bus = self._get_session_bus()
+
+            # obexd requires Select before PullAll. Call Select("int") and
+            # immediately attempt PullAll regardless of outcome — when iPhone
+            # closes the transport on Select, the obexd session object survives
+            # briefly and PullAll can still succeed in that window. Retrying
+            # Select("sim1") before PullAll kills the session prematurely.
+            try:
+                self._pbap_iface.Select("int", "pb", timeout=5000)
+                logger.info("PBAP: selected int/pb")
+            except Exception as sel_e:
+                dbus_name = getattr(sel_e, "get_dbus_name", lambda: "")()
+                logger.info("PBAP: Select(int) status [%s]: %s — proceeding to PullAll", dbus_name, sel_e)
+                if "UnknownObject" in dbus_name:
+                    raise PBAPPullError("Session closed before PullAll") from sel_e
+
+            transfer_path, _ = self._pull_all_with_fallback(tmp_path, bus)
 
             logger.info("PBAP: transfer started at %s", transfer_path)
             self._wait_for_transfer(str(transfer_path), tmp_path)
@@ -192,15 +245,107 @@ class PBAPClient:
             logger.info("Pulled %d contacts via PBAP (%d with photos)", len(contacts), with_photos)
             return contacts
 
+        except PBAPPullError:
+            raise
         except Exception as e:
             logger.error("PBAP pull failed: %s", e)
-            return []
+            raise PBAPPullError(str(e)) from e
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+
+    def _find_pbap_channel(self, address: str) -> Optional[int]:
+        """Look up the PBAP PSE RFCOMM channel via sdptool."""
+        try:
+            result = subprocess.run(
+                ["sdptool", "browse", address],
+                capture_output=True, text=True, timeout=10,
+            )
+            channel = None
+            in_pbap = False
+            for line in result.stdout.splitlines():
+                if "0x112f" in line.lower() or "phonebook access - pse" in line.lower():
+                    in_pbap = True
+                if in_pbap and "Channel:" in line:
+                    channel = int(line.split("Channel:")[1].strip())
+                    break
+                if in_pbap and line.strip().startswith("Service Name:") and channel is None:
+                    # Moved to next service without finding channel
+                    in_pbap = False
+            return channel
+        except Exception as e:
+            logger.debug("SDP channel lookup failed: %s", e)
+            return None
+
+    def _log_session_introspection(self, bus):
+        """Log what interfaces/methods obexd registers at the session path."""
+        try:
+            import dbus
+            obj = bus.get_object(OBEX_BUS_NAME, self._session_path, introspect=False)
+            xml = dbus.Interface(obj, "org.freedesktop.DBus.Introspectable").Introspect()
+            logger.info("obexd session interfaces:\n%s", xml)
+        except Exception as e:
+            logger.warning("Session introspection failed: %s", e)
+
+    def _pull_all_with_fallback(self, tmp_path: str, bus=None):
+        """
+        Try PullAll with progressively simpler call signatures.
+        obexd versions differ in what they accept; catch everything and try next.
+        Returns (transfer_path, properties) or just (transfer_path, None).
+        """
+        import dbus
+
+        attempts = [
+            # variant_level=1 ensures string values are encoded as dbus variants (sv)
+            lambda: self._pbap_iface.PullAll(
+                dbus.String(tmp_path),
+                dbus.Dictionary(
+                    {"Format": dbus.String("vcard30", variant_level=1)},
+                    signature="sv",
+                ),
+            ),
+            # Empty filter dict
+            lambda: self._pbap_iface.PullAll(
+                dbus.String(tmp_path),
+                dbus.Dictionary({}, signature="sv"),
+            ),
+            # No filter arg (very old obexd)
+            lambda: self._pbap_iface.PullAll(dbus.String(tmp_path)),
+        ]
+        if bus is not None:
+            attempts.append(
+                # Proxy direct call — bypasses Interface wrapper encoding
+                lambda: bus.get_object(
+                    OBEX_BUS_NAME, self._session_path, introspect=False
+                ).PullAll(
+                    dbus.String(tmp_path),
+                    dbus.Dictionary({}, signature="sv"),
+                    dbus_interface="org.bluez.obex.PhonebookAccess1",
+                )
+            )
+
+        last_error = None
+        for i, attempt in enumerate(attempts):
+            try:
+                result = attempt()
+                # Normalise return value: some versions return (path, props),
+                # others return just path as a string.
+                if isinstance(result, (list, tuple)) and len(result) >= 2:
+                    return result[0], result[1]
+                return result, None
+            except Exception as e:
+                last_error = e
+                dbus_name = getattr(e, "get_dbus_name", lambda: "")()
+                if "UnknownObject" in dbus_name:
+                    # Session was destroyed — no point trying other signatures
+                    raise PBAPPullError("Session closed during PullAll") from e
+                logger.info("PullAll attempt %d failed: %s", i + 1, e)
+
+        logger.error("PullAll failed with all signatures: %s", last_error)
+        raise PBAPPullError(str(last_error)) from last_error
 
     def pull_call_logs(self) -> list["CallLog"]:
         """

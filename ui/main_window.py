@@ -38,6 +38,50 @@ def _no_wheel(widget):
     widget.installEventFilter(_no_scroll)
 
 
+class _BtToggle(QWidget):
+    """iOS-style pill toggle for Bluetooth on/off."""
+
+    toggled = pyqtSignal(bool)
+
+    _W, _H = 52, 28
+
+    def __init__(self, checked: bool = False, parent=None):
+        super().__init__(parent)
+        self._checked = checked
+        self.setFixedSize(self._W, self._H)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setChecked(self, value: bool):
+        if self._checked != value:
+            self._checked = value
+            self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._checked = not self._checked
+            self.update()
+            self.toggled.emit(self._checked)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = self._H / 2
+        track_color = QColor("#34c759") if self._checked else QColor("#555555")
+        p.setBrush(track_color)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(0, 0, self._W, self._H, r, r)
+        # Knob
+        margin = 3
+        knob_d = self._H - margin * 2
+        knob_x = self._W - margin - knob_d if self._checked else margin
+        p.setBrush(QColor("#ffffff"))
+        p.drawEllipse(knob_x, margin, knob_d, knob_d)
+        p.end()
+
+
 class _ComboBox(QComboBox):
     """QComboBox that always opens downward."""
 
@@ -123,6 +167,8 @@ class MainWindow(QMainWindow):
     hangup_requested     = pyqtSignal()
     mute_requested       = pyqtSignal(bool)  # True = mute on
     mute_btn_clicked     = pyqtSignal()
+    bt_power_on_requested  = pyqtSignal()
+    bt_power_off_requested = pyqtSignal()
 
     # Settings signals
     audio_output_changed    = pyqtSignal(str)   # pactl sink name
@@ -136,6 +182,8 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self._store = store
         self._devices: list[dict] = []
+        self._bt_off_page_toggles: list = []
+        self._bt_powered: bool = True  # assume on until told otherwise
 
         self.setWindowTitle("HandsFree")
         self.setFixedSize(520, 580)
@@ -177,14 +225,22 @@ class MainWindow(QMainWindow):
         self._tabs.setDocumentMode(True)
         main_layout.addWidget(self._tabs)
 
-        # ── Contacts tab ──
+        # ── Contacts tab — always visible, search works without BT ──
         from ui.contacts_widget import ContactsWidget
         self._contacts_widget = ContactsWidget(self._store, dial_cb=self.dial_requested.emit)
         self._contacts_widget.dial_requested.connect(self.dial_requested)
         self._tabs.addTab(self._contacts_widget, "Contacts")
 
         # ── Dial pad tab ──
-        self._tabs.addTab(self._build_dial_tab(), "Dial")
+        # page 0 — normal (dial pad / in-call)
+        # page 1 — BT off
+        # page 2 — BT on but phone not connected
+        self._dial_tab_stack = QStackedWidget()
+        self._dial_tab_stack.addWidget(self._build_dial_tab())
+        self._dial_tab_stack.addWidget(self._build_bt_off_page())
+        self._dial_tab_stack.addWidget(self._build_phone_disconnected_page())
+        self._tabs.addTab(self._dial_tab_stack, "Dial")
+        self._dial_tab_stack.setCurrentIndex(2)  # default: no phone connected
 
         # ── Call log tab ──
         self._tabs.addTab(self._build_calllog_tab(), "Call Log")
@@ -195,6 +251,7 @@ class MainWindow(QMainWindow):
 
         # ── Bottom status bar ──
         self._statusbar = QStatusBar()
+        self._statusbar.setSizeGripEnabled(False)
         self.setStatusBar(self._statusbar)
 
         # Left side: connection dot + label
@@ -322,6 +379,12 @@ class MainWindow(QMainWindow):
         self._btn_connect = QPushButton("Connect")
         self._btn_connect.clicked.connect(self._on_connect_clicked)
         combo_row.addWidget(self._btn_connect)
+
+        self._btn_bt_on = QPushButton("Turn on Bluetooth")
+        self._btn_bt_on.setVisible(False)
+        self._btn_bt_on.clicked.connect(self.bt_power_on_requested)
+        combo_row.addWidget(self._btn_bt_on)
+
         layout.addLayout(combo_row)
 
         # Disconnect + Sync row (shown when connected)
@@ -338,6 +401,69 @@ class MainWindow(QMainWindow):
         layout.addLayout(action_row)
 
         return group
+
+    def _build_bt_off_page(self) -> QWidget:
+        """Placeholder shown inside Contacts/Dial tabs when Bluetooth is off."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(14)
+
+        icon = QLabel("⚡")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size: 40px; background: transparent;")
+        layout.addWidget(icon)
+
+        title = QLabel("Bluetooth is off")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 15px; font-weight: bold; background: transparent;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Turn on Bluetooth and connect\nyour phone to use this feature.")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("font-size: 12px; color: #888888; background: transparent;")
+        layout.addWidget(subtitle)
+
+        toggle = _BtToggle(checked=False)
+        toggle.toggled.connect(
+            lambda on: self.bt_power_on_requested.emit() if on else self.bt_power_off_requested.emit()
+        )
+        # Keep in sync when BT state changes externally
+        self._bt_off_page_toggles.append(toggle)
+
+        row = QHBoxLayout()
+        row.addStretch()
+        row.addWidget(toggle)
+        row.addStretch()
+        layout.addLayout(row)
+
+        return page
+
+    def _build_phone_disconnected_page(self) -> QWidget:
+        """Placeholder shown in Dial tab when BT is on but no phone is connected."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(14)
+
+        icon = QLabel("📵")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size: 40px; background: transparent;")
+        layout.addWidget(icon)
+
+        title = QLabel("No phone connected")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 15px; font-weight: bold; background: transparent;")
+        layout.addWidget(title)
+
+        subtitle = QLabel("Connect your phone from the\nDevice section to make calls.")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("font-size: 12px; color: #888888; background: transparent;")
+        layout.addWidget(subtitle)
+
+        return page
 
     def _build_dial_tab(self) -> QWidget:
         """
@@ -705,6 +831,16 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(w)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
+
+        # ── Bluetooth group ───────────────────────────────────────────────────
+        bt_group = QGroupBox("Bluetooth")
+        bt_layout = QHBoxLayout(bt_group)
+        bt_layout.addWidget(QLabel("Bluetooth"))
+        bt_layout.addStretch()
+        self._bt_toggle = _BtToggle(checked=True)
+        self._bt_toggle.toggled.connect(self._on_bt_toggle_changed)
+        bt_layout.addWidget(self._bt_toggle)
+        layout.addWidget(bt_group)
 
         # ── Theme group ───────────────────────────────────────────────────────
         theme_group = QGroupBox("Appearance")
@@ -1119,6 +1255,12 @@ class MainWindow(QMainWindow):
         new_val = max(0, min(150, self._mic_sens_slider.value() + delta))
         self._mic_sens_slider.setValue(new_val)
 
+    def _on_bt_toggle_changed(self, checked: bool):
+        if checked:
+            self.bt_power_on_requested.emit()
+        else:
+            self.bt_power_off_requested.emit()
+
     def _on_theme_combo_changed(self, name: str):
         self.apply_theme(name)
         self.theme_changed.emit(name)
@@ -1422,9 +1564,16 @@ class MainWindow(QMainWindow):
         self._btn_connect.setVisible(False)
         self._status_label.setText(f"Connecting to {name}…")
         # dot stays ⚠ amber
+        if not hasattr(self, "_connect_timeout"):
+            self._connect_timeout = QTimer(self)
+            self._connect_timeout.setSingleShot(True)
+            self._connect_timeout.timeout.connect(self.on_disconnected)
+        self._connect_timeout.start(30_000)
 
     @pyqtSlot(str)
     def on_connected(self, device_name: str):
+        if hasattr(self, "_connect_timeout"):
+            self._connect_timeout.stop()
         self._status_dot.setText("●")
         self._status_dot.setStyleSheet("color: #34a853; font-size: 14px; background: transparent;")
         self._status_label.setText(device_name)
@@ -1433,9 +1582,12 @@ class MainWindow(QMainWindow):
         self._btn_disconnect.setVisible(True)
         self._btn_sync.setVisible(True)
         self._contacts_widget.refresh()
+        self._dial_tab_stack.setCurrentIndex(0)  # show dial pad
 
     @pyqtSlot()
     def on_disconnected(self):
+        if hasattr(self, "_connect_timeout"):
+            self._connect_timeout.stop()
         self._status_dot.setText("⚠")
         self._status_dot.setStyleSheet("color: #ffffff; font-size: 14px; background: transparent;")
         self._status_label.setText("Not connected")
@@ -1444,6 +1596,58 @@ class MainWindow(QMainWindow):
         self._btn_disconnect.setVisible(False)
         self._btn_sync.setVisible(False)
         self._sync_widget.set_idle()
+        # Show the appropriate Dial placeholder based on BT state
+        if getattr(self, "_bt_powered", True):
+            self._dial_tab_stack.setCurrentIndex(2)  # BT on, no phone
+        else:
+            self._dial_tab_stack.setCurrentIndex(1)  # BT off
+
+    @pyqtSlot(bool)
+    def on_bt_powered(self, powered: bool):
+        # Keep all BT toggles in sync without re-emitting signals
+        for t in [getattr(self, "_bt_toggle", None)] + self._bt_off_page_toggles:
+            if t is not None:
+                t.blockSignals(True)
+                t.setChecked(powered)
+                t.blockSignals(False)
+        if powered:
+            self._status_dot.setText("⚠")
+            self._status_dot.setStyleSheet("color: #ffffff; font-size: 14px; background: transparent;")
+            self._status_label.setText("Not connected")
+            self._btn_bt_on.setVisible(False)
+            self._btn_connect.setVisible(True)
+            self._device_combo.setEnabled(True)
+            self._btn_connect.setEnabled(True)
+            self._bt_powered = True
+            self._tabs.setTabEnabled(1, True)
+            self._dial_tab_stack.setCurrentIndex(2)  # not connected yet
+            # Restore device list (remove the "turn on Bluetooth" placeholder)
+            self._device_combo.blockSignals(True)
+            if self._device_combo.count() == 1 and self._device_combo.itemData(0) is None:
+                self._device_combo.clear()
+                for d in getattr(self, "_devices", []):
+                    self._device_combo.addItem(f"{d['name']} ({d['address']})", userData=d["path"])
+            self._device_combo.blockSignals(False)
+        else:
+            self._status_dot.setText("✕")
+            self._status_dot.setStyleSheet("color: #ff6b6b; font-size: 14px; background: transparent;")
+            self._status_label.setText("Bluetooth is off")
+            self._btn_connect.setVisible(False)
+            self._btn_bt_on.setVisible(True)
+            self._btn_disconnect.setVisible(False)
+            self._btn_sync.setVisible(False)
+            self._bt_powered = False
+            self._tabs.setTabEnabled(1, True)  # tab clickable so user can see the message
+            self._dial_tab_stack.setCurrentIndex(1)  # BT off page
+            self._sync_widget.set_idle()
+            if hasattr(self, "_connect_timeout"):
+                self._connect_timeout.stop()
+            # Replace device list with a hint
+            self._device_combo.blockSignals(True)
+            self._device_combo.clear()
+            self._device_combo.addItem("Turn on Bluetooth to connect", userData=None)
+            self._device_combo.setItemData(0, QColor("#888888"), Qt.ItemDataRole.ForegroundRole)
+            self._device_combo.blockSignals(False)
 
     @pyqtSlot()
     def on_sync_started(self):

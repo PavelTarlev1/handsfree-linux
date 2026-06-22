@@ -287,6 +287,15 @@ class SLCConnection:
                     logger.info("SLC established with %s", self._device_path)
                     if self._on_established:
                         self._on_established(self._device_path)
+                    # If the phone was already in a call when we connected,
+                    # fire the call-active callback so the UI shows the in-call screen.
+                    if self._call_state == CallState.ACTIVE and self._on_call_active:
+                        self._call_log_start = time.monotonic()
+                        logger.info("Call already active at SLC establishment — transferring to computer")
+                        self._on_call_active()
+                    elif self._call_state == CallState.INCOMING and self._on_ring:
+                        logger.info("Incoming call already ringing at SLC establishment")
+                        self._on_ring(self._caller_number)
 
     def _dispatch(self, line: str):
         """Handle events after SLC is established."""
