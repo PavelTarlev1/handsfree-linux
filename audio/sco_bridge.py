@@ -41,6 +41,27 @@ _CHUNK = int(_RATE * 2 * 0.030)   # 480 bytes = 240 samples = 30 ms
 _SCO_MTU = 48
 
 
+def _pacat_supports_latency_flag() -> bool:
+    """Return True if this pacat supports --latency-msec (not all Pi builds do)."""
+    try:
+        result = subprocess.run(
+            ["pacat", "--help"], capture_output=True, text=True, timeout=3,
+        )
+        return "--latency-msec" in (result.stdout + result.stderr)
+    except Exception:
+        return False
+
+
+_PACAT_LATENCY_FLAG: Optional[str] = None  # lazy-initialised
+
+
+def _pacat_latency_arg() -> Optional[str]:
+    global _PACAT_LATENCY_FLAG
+    if _PACAT_LATENCY_FLAG is None:
+        _PACAT_LATENCY_FLAG = "--latency-msec=40" if _pacat_supports_latency_flag() else ""
+    return _PACAT_LATENCY_FLAG or None
+
+
 class SCOBridge:
     """
     Bridges a raw SCO socket to/from the user's headset via pacat.
@@ -181,12 +202,15 @@ class SCOBridge:
                 pass
             return False
 
+        latency_arg = _pacat_latency_arg()
+
         # pacat --playback: receives bytes on stdin, plays through speaker
         play_cmd = [
             "pacat", "--playback", "--raw",
             f"--format={_FORMAT}", f"--rate={_RATE}", f"--channels={_CHANNELS}",
-            "--latency-msec=40",
         ]
+        if latency_arg:
+            play_cmd.append(latency_arg)
         if output_sink:
             play_cmd.append(f"--device={output_sink}")
 
@@ -194,8 +218,9 @@ class SCOBridge:
         rec_cmd = [
             "pacat", "--record", "--raw",
             f"--format={_FORMAT}", f"--rate={_RATE}", f"--channels={_CHANNELS}",
-            "--latency-msec=40",
         ]
+        if latency_arg:
+            rec_cmd.append(latency_arg)
         if input_source:
             rec_cmd.append(f"--device={input_source}")
 
@@ -299,13 +324,23 @@ def _mac_to_bdaddr(mac: str):
     return (_ct.c_uint8 * 6)(*octets)
 
 
+def _load_libc():
+    """Load libc via ctypes, works on x86-64, ARM (Pi), aarch64, etc."""
+    from ctypes.util import find_library
+    # find_library("c") returns "libc.so.6" on glibc, "libc.musl-*.so.1" on musl (Alpine)
+    name = find_library("c") or "libc.so.6"
+    return _ct.CDLL(name, use_errno=True)
+
+
 def _sco_connect(remote_mac: str, timeout_sec: float = 2.0) -> int:
     """
     Open and connect a BTPROTO_SCO socket via libc.
     Returns raw fd on success, negative errno on failure.
+    Uses find_library so the correct libc is found on any architecture
+    (x86-64, ARM, aarch64, musl/Alpine).
     """
     try:
-        libc = _ct.CDLL("libc.so.6", use_errno=True)
+        libc = _load_libc()
 
         fd = libc.socket(_AF_BLUETOOTH, _SOCK_SEQPACKET, _BTPROTO_SCO)
         if fd < 0:
@@ -318,8 +353,10 @@ def _sco_connect(remote_mac: str, timeout_sec: float = 2.0) -> int:
             libc.close(fd)
             return -err
 
-        # Set connect timeout
-        tv = _struct.pack("ll", int(timeout_sec), 0)
+        # Set connect timeout.
+        # Use "@" (native byte order, native size) so timeval is the right
+        # size on both 64-bit (2×8 bytes) and 32-bit ARM/Pi (2×4 bytes).
+        tv = _struct.pack("@ll", int(timeout_sec), 0)
         tv_buf = (_ct.c_char * len(tv))(*tv)
         libc.setsockopt(fd, _SOL_SOCKET, _SO_SNDTIMEO, tv_buf, len(tv))
 

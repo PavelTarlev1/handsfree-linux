@@ -2,9 +2,44 @@
 # One-time setup for HandsFree on Linux.
 # Run once with: bash scripts/setup.sh
 #
-# Supports: Ubuntu, Debian, Fedora, Arch, openSUSE, and other systemd distros.
+# Supports: Ubuntu, Debian, Fedora, Arch, openSUSE, Raspberry Pi OS, and
+# other systemd distros.
 
 set -e
+
+# ── Detect platform ───────────────────────────────────────────────────────────
+IS_PI=false
+if grep -qi "raspberry" /proc/cpuinfo 2>/dev/null || \
+   grep -qi "raspberry" /sys/firmware/devicetree/base/model 2>/dev/null; then
+    IS_PI=true
+    echo "Raspberry Pi detected."
+fi
+
+# ── Check and install required packages ───────────────────────────────────────
+_install_pkg() {
+    local pkg="$1"
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y "$pkg" 2>/dev/null || true
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y "$pkg" 2>/dev/null || true
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -S --noconfirm "$pkg" 2>/dev/null || true
+    fi
+}
+
+# obexd is needed for contact sync — not installed by default on Pi OS
+if ! command -v obexd >/dev/null 2>&1 && \
+   [ ! -f /usr/lib/bluetooth/obexd ] && \
+   [ ! -f /usr/libexec/bluetooth/obexd ]; then
+    echo "obexd not found — installing bluez-obexd..."
+    _install_pkg bluez-obexd
+fi
+
+# sdptool for reliable PBAP channel lookup
+if ! command -v sdptool >/dev/null 2>&1; then
+    echo "sdptool not found — installing bluez-tools..."
+    _install_pkg bluez-tools 2>/dev/null || _install_pkg bluez 2>/dev/null || true
+fi
 
 # ── Bluetooth device class ────────────────────────────────────────────────────
 # Class 0x200408 = Telephony service + Audio/Video major + Handsfree minor.
