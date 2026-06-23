@@ -208,3 +208,37 @@ call_popup_timeout_seconds = 30
                 self.bluetooth.known_devices = json.loads(sidecar.read_text())
             except Exception as e:
                 logger.warning("Could not load known_devices: %s", e)
+
+
+# ── Simple key/value preferences (runtime-mutable, not in config.toml) ────────
+
+_PREFS_FILE = CONFIG_DIR / "prefs.json"
+
+
+def load_pref(key: str, default=None):
+    """Read one user preference from prefs.json. Returns default if missing."""
+    try:
+        import json
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        if _PREFS_FILE.exists():
+            return json.loads(_PREFS_FILE.read_text()).get(key, default)
+    except Exception:
+        pass
+    return default
+
+
+def save_pref(key: str, value) -> None:
+    """Write one user preference to prefs.json."""
+    import json
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        data: dict = {}
+        if _PREFS_FILE.exists():
+            try:
+                data = json.loads(_PREFS_FILE.read_text())
+            except Exception:
+                pass
+        data[key] = value
+        _PREFS_FILE.write_text(json.dumps(data, indent=2))
+    except Exception as e:
+        logger.warning("Could not save pref %s: %s", key, e)

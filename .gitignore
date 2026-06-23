@@ -33,6 +33,9 @@ config.toml
 *.pcm
 *.raw
 
+# Claude Code skills / local AI config (not for public repo)
+.claude/
+
 # Secrets / personal info
 .env
 .env.*

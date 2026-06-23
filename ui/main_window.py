@@ -290,11 +290,15 @@ class MainWindow(QMainWindow):
         self._update_badge = _UpdateBadge()
         self._update_badge.clicked.connect(self._on_update_badge_clicked)
         self._statusbar.addPermanentWidget(self._update_badge)
-        QTimer.singleShot(_UPDATE_CHECK_DELAY_MS, self._silent_update_check)
+
+        from core.config import load_pref
+        self._auto_update: bool = load_pref("auto_update", True)
         self._update_check_timer = QTimer(self)
         self._update_check_timer.setInterval(_UPDATE_CHECK_INTERVAL_MS)
         self._update_check_timer.timeout.connect(self._silent_update_check)
-        self._update_check_timer.start()
+        if self._auto_update:
+            QTimer.singleShot(_UPDATE_CHECK_DELAY_MS, self._silent_update_check)
+            self._update_check_timer.start()
 
         # Floating call overlay (always-on-top, visible even when window minimised)
         from ui.call_overlay import CallOverlay
@@ -1024,6 +1028,16 @@ class MainWindow(QMainWindow):
         ver_lbl.setWordWrap(True)
         v.addWidget(ver_lbl)
 
+        # Auto-update toggle
+        auto_row = QHBoxLayout()
+        auto_row.setSpacing(10)
+        auto_row.addWidget(QLabel("Auto update"))
+        self._toggle_auto_update = _BtToggle(checked=self._auto_update)
+        self._toggle_auto_update.toggled.connect(self._on_auto_update_toggled)
+        auto_row.addWidget(self._toggle_auto_update)
+        auto_row.addStretch()
+        v.addLayout(auto_row)
+
         update_row = QHBoxLayout()
         update_row.setSpacing(12)
 
@@ -1260,6 +1274,16 @@ class MainWindow(QMainWindow):
             self.bt_power_on_requested.emit()
         else:
             self.bt_power_off_requested.emit()
+
+    def _on_auto_update_toggled(self, enabled: bool):
+        from core.config import save_pref
+        self._auto_update = enabled
+        save_pref("auto_update", enabled)
+        if enabled:
+            self._update_check_timer.start()
+            QTimer.singleShot(0, self._silent_update_check)
+        else:
+            self._update_check_timer.stop()
 
     def _on_theme_combo_changed(self, name: str):
         self.apply_theme(name)
