@@ -212,17 +212,16 @@ class SCOBridge:
     def _start_audio(
         self, raw_fd: int, output_sink: str, input_source: str, codec: int,
     ) -> bool:
+        from audio import msbc as _msbc
         from bluetooth.at_handler import CODEC_MSBC
         use_msbc = (codec == CODEC_MSBC)
 
-        if use_msbc:
-            from audio import msbc
-            if not msbc.AVAILABLE:
-                logger.warning(
-                    "mSBC negotiated but libsbc not installed — falling back to CVSD audio. "
-                    "Install with: sudo apt-get install libsbc1"
-                )
-                use_msbc = False
+        if use_msbc and not _msbc.AVAILABLE:
+            logger.warning(
+                "mSBC negotiated but libsbc not installed — falling back to CVSD audio. "
+                "Install with: sudo apt-get install libsbc1"
+            )
+            use_msbc = False
 
         try:
             self._sco_sock = socket.fromfd(
@@ -238,7 +237,7 @@ class SCOBridge:
                 pass
             return False
 
-        rate = msbc.RATE if use_msbc else _CVSD_RATE  # type: ignore[possibly-undefined]
+        rate = _msbc.RATE if use_msbc else _CVSD_RATE
         latency_arg = _pacat_latency_arg()
 
         play_cmd = [
@@ -276,9 +275,8 @@ class SCOBridge:
 
         self._running = True
         if use_msbc:
-            from audio.msbc import MSBCCodec
-            rx_codec = MSBCCodec()
-            tx_codec = MSBCCodec()
+            rx_codec = _msbc.MSBCCodec()
+            tx_codec = _msbc.MSBCCodec()
             t_rx = threading.Thread(
                 target=self._rx_loop_msbc, args=(rx_codec,), name="SCO-RX", daemon=True,
             )
@@ -340,7 +338,7 @@ class SCOBridge:
 
     def _rx_loop_msbc(self, codec):
         """SCO receive → decode SBC → pacat playback stdin (phone → speaker, mSBC)."""
-        from audio.msbc import MTU as MSBC_MTU
+        from audio.msbc import MTU as MSBC_MTU  # already cached in sys.modules
         sock = self._sco_sock
         proc = self._play_proc
         try:
@@ -363,7 +361,7 @@ class SCOBridge:
 
     def _tx_loop_msbc(self, codec):
         """pacat record stdout → encode SBC → SCO send (mic → phone, mSBC)."""
-        from audio.msbc import PCM_BYTES
+        from audio.msbc import PCM_BYTES  # already cached in sys.modules
         sock = self._sco_sock
         proc = self._rec_proc
         try:

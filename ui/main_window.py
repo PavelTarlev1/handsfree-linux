@@ -246,6 +246,10 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._build_calllog_tab(), "Call Log")
         self._tabs.currentChanged.connect(self._on_tab_changed)
 
+        # Load auto-update pref before building Settings tab (used in _build_about_group)
+        from core.config import load_pref
+        self._auto_update: bool = load_pref("auto_update", True)
+
         # ── Settings tab ──
         self._tabs.addTab(self._build_settings_tab(), "Settings")
 
@@ -291,8 +295,6 @@ class MainWindow(QMainWindow):
         self._update_badge.clicked.connect(self._on_update_badge_clicked)
         self._statusbar.addPermanentWidget(self._update_badge)
 
-        from core.config import load_pref
-        self._auto_update: bool = load_pref("auto_update", True)
         self._update_check_timer = QTimer(self)
         self._update_check_timer.setInterval(_UPDATE_CHECK_INTERVAL_MS)
         self._update_check_timer.timeout.connect(self._silent_update_check)
