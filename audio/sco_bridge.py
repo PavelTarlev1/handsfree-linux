@@ -100,14 +100,31 @@ class SCOBridge:
             logger.error("Cannot derive BT address from %s", device_path)
             return False
 
-        # Attempt 1 — BlueZ MediaTransport1
+        from bluetooth.at_handler import CODEC_MSBC
+        want_msbc = (codec == CODEC_MSBC)
+
+        # Attempt 1 — BlueZ MediaTransport1 (codec handled by BlueZ)
         if bus is not None:
             fd = self._acquire_media_transport(device_path, bus)
             if fd >= 0:
                 return self._start_audio(fd, output_sink, input_source, codec)
 
-        # Attempt 2 — direct SCO socket (retry until phone opens SCO)
-        fd = self._connect_sco(remote_addr)
+        # Attempt 2 — direct SCO socket.
+        # For mSBC: request transparent mode so the kernel doesn't touch the data.
+        # If the adapter doesn't support transparent mode, fall back to CVSD.
+        if want_msbc:
+            fd = self._connect_sco(
+                remote_addr, voice_setting=_BT_VOICE_TRANSPARENT,
+            )
+            if fd >= 0:
+                return self._start_audio(fd, output_sink, input_source, codec)
+            logger.warning(
+                "Adapter does not support transparent SCO — falling back to CVSD. "
+                "mSBC wideband audio is not available on this device."
+            )
+            codec = 1  # fall back to CVSD
+
+        fd = self._connect_sco(remote_addr, voice_setting=_BT_VOICE_CVSD_16BIT)
         if fd >= 0:
             return self._start_audio(fd, output_sink, input_source, codec)
 
@@ -167,19 +184,26 @@ class SCOBridge:
             logger.debug("MediaTransport1 not available: %s", e)
         return -1
 
-    def _connect_sco(self, remote_addr: str, attempts: int = 8) -> int:
+    def _connect_sco(
+        self,
+        remote_addr: str,
+        attempts: int = 8,
+        voice_setting: Optional[int] = None,
+    ) -> int:
         """
         Try to connect a BTPROTO_SCO socket to remote_addr.
         Retries up to `attempts` times (phone may take a moment to open SCO).
         Returns the fd, or -1.
         """
+        if voice_setting is None:
+            voice_setting = _BT_VOICE_CVSD_16BIT
         for i in range(attempts):
-            fd = _sco_connect(remote_addr, timeout_sec=1.0)
+            fd = _sco_connect(remote_addr, timeout_sec=1.0, voice_setting=voice_setting)
             if fd >= 0:
                 logger.info("SCO connected to %s (attempt %d)", remote_addr, i + 1)
                 return fd
             if i < attempts - 1:
-                threading.Event().wait(0.4)   # brief pause before retry
+                threading.Event().wait(0.4)
         logger.warning("SCO connect failed after %d attempts to %s", attempts, remote_addr)
         return -1
 
@@ -381,6 +405,11 @@ _SOCK_SEQPACKET =  5
 _BTPROTO_SCO    =  2
 _SOL_SOCKET     =  1
 _SO_SNDTIMEO    = 13
+_SOL_BLUETOOTH  = 274
+_BT_VOICE       = 11
+# Voice settings: kernel passes raw bytes (mSBC) vs. converts CVSD↔PCM
+_BT_VOICE_TRANSPARENT = 0x0003
+_BT_VOICE_CVSD_16BIT  = 0x0060
 
 
 class _sockaddr_sco(_ct.Structure):
@@ -404,26 +433,46 @@ def _load_libc():
     return _ct.CDLL(name, use_errno=True)
 
 
-def _sco_connect(remote_mac: str, timeout_sec: float = 2.0) -> int:
+def _sco_connect(
+    remote_mac: str,
+    timeout_sec: float = 2.0,
+    voice_setting: int = _BT_VOICE_CVSD_16BIT,
+) -> int:
     """
     Open and connect a BTPROTO_SCO socket via libc.
-    Returns raw fd on success, negative errno on failure.
-    Uses find_library so the correct libc is found on any architecture
-    (x86-64, ARM, aarch64, musl/Alpine).
+    Returns raw fd on success, -1 on failure.
+
+    voice_setting controls what the kernel does with the SCO data:
+      _BT_VOICE_CVSD_16BIT  (0x0060) — kernel converts CVSD↔16-bit PCM (CVSD calls)
+      _BT_VOICE_TRANSPARENT (0x0003) — kernel passes raw bytes through (mSBC calls)
+
+    Not all adapters support _BT_VOICE_TRANSPARENT. If setsockopt fails, the
+    caller should retry with _BT_VOICE_CVSD_16BIT and use CVSD audio instead.
     """
     try:
         libc = _load_libc()
 
         fd = libc.socket(_AF_BLUETOOTH, _SOCK_SEQPACKET, _BTPROTO_SCO)
         if fd < 0:
-            return -_ct.get_errno()
+            return -1
+
+        # Set voice setting before bind/connect — determines kernel codec behaviour.
+        vs = _struct.pack("@H", voice_setting)  # uint16_t, native byte order
+        vs_buf = (_ct.c_char * len(vs))(*vs)
+        if libc.setsockopt(fd, _SOL_BLUETOOTH, _BT_VOICE, vs_buf, len(vs)) < 0:
+            err = _ct.get_errno()
+            libc.close(fd)
+            logger.debug(
+                "BT_VOICE setsockopt failed (voice=0x%04x, errno=%d) — "
+                "adapter may not support this mode", voice_setting, err,
+            )
+            return -1
 
         # Bind to any local adapter
         local = _sockaddr_sco(_AF_BLUETOOTH, _mac_to_bdaddr("00:00:00:00:00:00"))
         if libc.bind(fd, _ct.byref(local), _ct.sizeof(local)) < 0:
-            err = _ct.get_errno()
             libc.close(fd)
-            return -err
+            return -1
 
         # Set connect timeout.
         # Use "@" (native byte order, native size) so timeval is the right
@@ -434,9 +483,8 @@ def _sco_connect(remote_mac: str, timeout_sec: float = 2.0) -> int:
 
         remote = _sockaddr_sco(_AF_BLUETOOTH, _mac_to_bdaddr(remote_mac))
         if libc.connect(fd, _ct.byref(remote), _ct.sizeof(remote)) < 0:
-            err = _ct.get_errno()
             libc.close(fd)
-            return -err
+            return -1
 
         return fd
     except Exception as e:
