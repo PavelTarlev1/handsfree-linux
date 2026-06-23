@@ -128,12 +128,20 @@ class TestParseLine:
 
 
 class TestCommandBuilders:
-    def test_cmd_brsf_contains_features(self):
-        cmd = cmd_brsf()
-        assert cmd == f"AT+BRSF={HF_FEATURES}"
+    def test_cmd_brsf_cvsd_matches_base_features(self):
+        from bluetooth.at_handler import _HF_FEATURES_BASE
+        cmd = cmd_brsf("cvsd")
+        assert cmd == f"AT+BRSF={_HF_FEATURES_BASE}"
 
-    def test_cmd_bac_cvsd_only(self):
-        assert cmd_bac() == "AT+BAC=1"
+    def test_cmd_brsf_msbc_adds_codec_bit(self):
+        msbc_val = int(cmd_brsf("msbc").split("=")[1])
+        assert msbc_val & (1 << 7)
+
+    def test_cmd_bac_msbc_advertises_both(self):
+        assert cmd_bac("msbc") == "AT+BAC=1,2"
+
+    def test_cmd_bac_cvsd_advertises_cvsd_only(self):
+        assert cmd_bac("cvsd") == "AT+BAC=1"
 
     def test_cmd_cind_test(self):
         assert cmd_cind_test() == "AT+CIND=?"

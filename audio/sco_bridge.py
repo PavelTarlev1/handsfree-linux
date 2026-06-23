@@ -1,18 +1,17 @@
 """
 SCO audio bridge for HFP calls.
 
-Audio path (simple, direct):
+Audio path (direct, no pipe modules or loopbacks):
 
-  Phone ─SCO─► recv bytes ──► pacat --playback ──► Jabra speaker
-  Jabra mic ──► pacat --record ──► send bytes ──SCO─► Phone
+  Phone ─SCO─► recv bytes ──► pacat --playback ──► speaker
+  mic ──► pacat --record ──► send bytes ──SCO─► Phone
 
-No pipe modules, no loopbacks, no intermediate FIFOs.
-PipeWire handles resampling internally via pacat.
+CVSD (codec=1): kernel handles encode/decode transparently.
+  User-space sees raw s16le PCM at 8 kHz, 48-byte SCO packets.
 
-The raw BTPROTO_SCO socket uses the kernel's CVSD codec conversion:
-  write s16le PCM → kernel encodes CVSD → over-the-air
-  over-the-air CVSD → kernel decodes → read s16le PCM
-So user-space always works with 8 kHz signed 16-bit mono PCM.
+mSBC (codec=2): user-space encode/decode via libsbc.
+  s16le PCM at 16 kHz, 60-byte packets (H2 header + 57-byte SBC frame).
+  Much clearer audio than CVSD. Requires libsbc1 to be installed.
 
 Python 3.10's socket module is broken for BTPROTO_SCO — we use libc
 ctypes for socket(), bind(), connect().
@@ -31,14 +30,13 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# CVSD SCO: 8 kHz, s16le, mono
-_RATE     = 8000
+# CVSD: 8 kHz, s16le, mono, 48-byte packets
+_CVSD_RATE    = 8000
+_CVSD_MTU     = 48
+_CVSD_CHUNK   = int(_CVSD_RATE * 2 * 0.030)  # 480 bytes = 30 ms
+
 _FORMAT   = "s16le"
 _CHANNELS = 1
-# Chunk = 30 ms of audio → smoother audio with fewer write() calls
-_CHUNK = int(_RATE * 2 * 0.030)   # 480 bytes = 240 samples = 30 ms
-# SCO SOCK_SEQPACKET MTU for CVSD HV3 packets
-_SCO_MTU = 48
 
 
 def _pacat_supports_latency_flag() -> bool:
@@ -106,12 +104,12 @@ class SCOBridge:
         if bus is not None:
             fd = self._acquire_media_transport(device_path, bus)
             if fd >= 0:
-                return self._start_audio(fd, output_sink, input_source)
+                return self._start_audio(fd, output_sink, input_source, codec)
 
         # Attempt 2 — direct SCO socket (retry until phone opens SCO)
         fd = self._connect_sco(remote_addr)
         if fd >= 0:
-            return self._start_audio(fd, output_sink, input_source)
+            return self._start_audio(fd, output_sink, input_source, codec)
 
         logger.error("SCO bridge: could not establish link to %s", remote_addr)
         return False
@@ -187,7 +185,21 @@ class SCOBridge:
 
     # ── Audio forwarding ──────────────────────────────────────────────────────
 
-    def _start_audio(self, raw_fd: int, output_sink: str, input_source: str) -> bool:
+    def _start_audio(
+        self, raw_fd: int, output_sink: str, input_source: str, codec: int,
+    ) -> bool:
+        from bluetooth.at_handler import CODEC_MSBC
+        use_msbc = (codec == CODEC_MSBC)
+
+        if use_msbc:
+            from audio import msbc
+            if not msbc.AVAILABLE:
+                logger.warning(
+                    "mSBC negotiated but libsbc not installed — falling back to CVSD audio. "
+                    "Install with: sudo apt-get install libsbc1"
+                )
+                use_msbc = False
+
         try:
             self._sco_sock = socket.fromfd(
                 raw_fd, socket.AF_BLUETOOTH,
@@ -202,22 +214,21 @@ class SCOBridge:
                 pass
             return False
 
+        rate = msbc.RATE if use_msbc else _CVSD_RATE  # type: ignore[possibly-undefined]
         latency_arg = _pacat_latency_arg()
 
-        # pacat --playback: receives bytes on stdin, plays through speaker
         play_cmd = [
             "pacat", "--playback", "--raw",
-            f"--format={_FORMAT}", f"--rate={_RATE}", f"--channels={_CHANNELS}",
+            f"--format={_FORMAT}", f"--rate={rate}", f"--channels={_CHANNELS}",
         ]
         if latency_arg:
             play_cmd.append(latency_arg)
         if output_sink:
             play_cmd.append(f"--device={output_sink}")
 
-        # pacat --record: captures mic to stdout
         rec_cmd = [
             "pacat", "--record", "--raw",
-            f"--format={_FORMAT}", f"--rate={_RATE}", f"--channels={_CHANNELS}",
+            f"--format={_FORMAT}", f"--rate={rate}", f"--channels={_CHANNELS}",
         ]
         if latency_arg:
             rec_cmd.append(latency_arg)
@@ -235,30 +246,44 @@ class SCOBridge:
             logger.error("Failed to start pacat: %s", e)
             return False
 
-        logger.info("SCO audio: pacat started  out=%s  in=%s",
-                    output_sink or "(default)", input_source or "(default)")
+        codec_name = "mSBC 16kHz" if use_msbc else "CVSD 8kHz"
+        logger.info("SCO audio: %s  out=%s  in=%s",
+                    codec_name, output_sink or "(default)", input_source or "(default)")
 
         self._running = True
-        t_rx = threading.Thread(target=self._rx_loop, name="SCO-RX", daemon=True)
-        t_tx = threading.Thread(target=self._tx_loop, name="SCO-TX", daemon=True)
+        if use_msbc:
+            from audio.msbc import MSBCCodec
+            rx_codec = MSBCCodec()
+            tx_codec = MSBCCodec()
+            t_rx = threading.Thread(
+                target=self._rx_loop_msbc, args=(rx_codec,), name="SCO-RX", daemon=True,
+            )
+            t_tx = threading.Thread(
+                target=self._tx_loop_msbc, args=(tx_codec,), name="SCO-TX", daemon=True,
+            )
+        else:
+            t_rx = threading.Thread(target=self._rx_loop_cvsd, name="SCO-RX", daemon=True)
+            t_tx = threading.Thread(target=self._tx_loop_cvsd, name="SCO-TX", daemon=True)
+
         t_rx.start()
         t_tx.start()
         self._threads = [t_rx, t_tx]
         return True
 
-    def _rx_loop(self):
-        """SCO receive → pacat playback stdin (phone → speaker)."""
+    # ── CVSD loops (8 kHz, kernel handles codec) ──────────────────────────────
+
+    def _rx_loop_cvsd(self):
+        """SCO receive → pacat playback stdin (phone → speaker, CVSD)."""
         sock = self._sco_sock
         proc = self._play_proc
-        # Accumulate SCO packets (48 bytes each) into 30 ms chunks before writing
         buf = bytearray()
         try:
             while self._running and sock and proc:
-                data = sock.recv(_SCO_MTU)
+                data = sock.recv(_CVSD_MTU)
                 if not data:
                     break
                 buf += data
-                if len(buf) >= _CHUNK:
+                if len(buf) >= _CVSD_CHUNK:
                     try:
                         proc.stdin.write(bytes(buf))
                         proc.stdin.flush()
@@ -267,27 +292,74 @@ class SCOBridge:
                     buf.clear()
         except OSError:
             pass
-        logger.debug("SCO-RX loop ended")
+        logger.debug("SCO-RX-CVSD loop ended")
 
-    def _tx_loop(self):
-        """pacat record stdout → SCO send (mic → phone)."""
+    def _tx_loop_cvsd(self):
+        """pacat record stdout → SCO send (mic → phone, CVSD)."""
         sock = self._sco_sock
         proc = self._rec_proc
         try:
             while self._running and sock and proc:
-                data = proc.stdout.read(_CHUNK)
+                data = proc.stdout.read(_CVSD_CHUNK)
                 if not data:
                     break
-                # SCO SOCK_SEQPACKET: each send() is one packet.
-                # CVSD HV3 MTU = 48 bytes — split into 48-byte frames.
                 try:
-                    for i in range(0, len(data), _SCO_MTU):
-                        sock.send(data[i:i + _SCO_MTU])
+                    for i in range(0, len(data), _CVSD_MTU):
+                        sock.send(data[i : i + _CVSD_MTU])
                 except OSError:
                     break
         except OSError:
             pass
-        logger.debug("SCO-TX loop ended")
+        logger.debug("SCO-TX-CVSD loop ended")
+
+    # ── mSBC loops (16 kHz, user-space SBC encode/decode) ────────────────────
+
+    def _rx_loop_msbc(self, codec):
+        """SCO receive → decode SBC → pacat playback stdin (phone → speaker, mSBC)."""
+        from audio.msbc import MTU as MSBC_MTU
+        sock = self._sco_sock
+        proc = self._play_proc
+        try:
+            while self._running and sock and proc:
+                packet = sock.recv(MSBC_MTU)
+                if not packet:
+                    break
+                pcm = codec.decode(packet)
+                if pcm:
+                    try:
+                        proc.stdin.write(pcm)
+                        proc.stdin.flush()
+                    except BrokenPipeError:
+                        break
+        except OSError:
+            pass
+        finally:
+            codec.close()
+        logger.debug("SCO-RX-mSBC loop ended")
+
+    def _tx_loop_msbc(self, codec):
+        """pacat record stdout → encode SBC → SCO send (mic → phone, mSBC)."""
+        from audio.msbc import PCM_BYTES
+        sock = self._sco_sock
+        proc = self._rec_proc
+        try:
+            while self._running and sock and proc:
+                # Read exactly one frame worth of PCM (240 bytes = 120 samples)
+                pcm = b""
+                while len(pcm) < PCM_BYTES:
+                    chunk = proc.stdout.read(PCM_BYTES - len(pcm))
+                    if not chunk:
+                        return
+                    pcm += chunk
+                try:
+                    sock.send(codec.encode(pcm))
+                except OSError:
+                    break
+        except OSError:
+            pass
+        finally:
+            codec.close()
+        logger.debug("SCO-TX-mSBC loop ended")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
