@@ -1048,11 +1048,11 @@ class MainWindow(QMainWindow):
         self._btn_check_update.clicked.connect(self._check_for_updates)
         update_row.addWidget(self._btn_check_update)
 
-        self._btn_download_update = QPushButton("Install update")
-        self._btn_download_update.setMinimumWidth(160)
-        self._btn_download_update.setVisible(False)
-        self._btn_download_update.clicked.connect(self._start_download)
-        update_row.addWidget(self._btn_download_update)
+        self._btn_install_update = QPushButton("Update now")
+        self._btn_install_update.setMinimumWidth(130)
+        self._btn_install_update.setVisible(False)
+        self._btn_install_update.clicked.connect(self._apply_update)
+        update_row.addWidget(self._btn_install_update)
 
         self._update_status = QLabel("")
         self._update_status.setStyleSheet("font-size: 12px; color: #8e8e93;")
@@ -1062,9 +1062,8 @@ class MainWindow(QMainWindow):
         v.addLayout(update_row)
 
         # QThread workers kept alive as instance vars
-        self._checker    = None
-        self._downloader = None
-        self._pending_asset_url = None
+        self._checker = None
+        self._applier = None
         return group
 
     def _check_for_updates(self):
@@ -1097,15 +1096,15 @@ class MainWindow(QMainWindow):
                 break
 
     def _on_update_available(self, info: dict):
-        self._pending_asset_url = info.get("asset_url")
         self._update_status.setText(f"New version available: {info['tag']}")
-        self._btn_download_update.setVisible(True)
+        self._btn_install_update.setVisible(True)
         self._btn_check_update.setEnabled(True)
         self._btn_check_update.setText("Check for updates")
 
     def _on_up_to_date(self):
         self._btn_check_update.setEnabled(True)
         self._btn_check_update.setText("Check for updates")
+        self._btn_install_update.setVisible(False)
         self._update_status.setText("You are running the latest version.")
 
     def _on_check_failed(self, msg: str):
@@ -1113,31 +1112,26 @@ class MainWindow(QMainWindow):
         self._btn_check_update.setText("Check for updates")
         self._update_status.setText(f"Update check failed: {msg}")
 
-    def _start_download(self):
-        from core.updater import UpdateDownloader, apply_update_linux
-        if not self._pending_asset_url:
-            return
-        self._btn_download_update.setEnabled(False)
-        self._update_status.setText("Downloading… 0%")
+    def _apply_update(self):
+        from core.updater import UpdateApplier
+        self._btn_install_update.setEnabled(False)
+        self._btn_check_update.setEnabled(False)
+        self._update_status.setText("Pulling latest code…")
 
-        self._downloader = UpdateDownloader(self._pending_asset_url, self)
-        self._downloader.progress.connect(self._on_download_progress)
-        self._downloader.finished.connect(self._on_download_finished)
-        self._downloader.failed.connect(self._on_download_failed)
-        self._downloader.start()
+        self._applier = UpdateApplier(self)
+        self._applier.finished.connect(self._on_update_pulled)
+        self._applier.failed.connect(self._on_update_failed)
+        self._applier.start()
 
-    def _on_download_progress(self, done: int, total: int):
-        pct = int(done * 100 / total) if total else 0
-        self._update_status.setText(f"Downloading… {pct}%")
-
-    def _on_download_finished(self, tmp_path: str):
+    def _on_update_pulled(self):
         from core.updater import apply_update_linux
-        self._update_status.setText("Applying update and restarting…")
-        apply_update_linux(tmp_path)
+        self._update_status.setText("Update applied — restarting…")
+        apply_update_linux()
 
-    def _on_download_failed(self, msg: str):
-        self._btn_download_update.setEnabled(True)
-        self._update_status.setText(f"Download failed: {msg}")
+    def _on_update_failed(self, msg: str):
+        self._btn_install_update.setEnabled(True)
+        self._btn_check_update.setEnabled(True)
+        self._update_status.setText(f"Update failed: {msg}")
 
     def _refresh_audio_devices(self):
         """Query pactl for available sinks and sources and fill the dropdowns."""
