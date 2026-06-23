@@ -1070,7 +1070,7 @@ class MainWindow(QMainWindow):
         from core.updater import UpdateChecker
         self._btn_check_update.setEnabled(False)
         self._btn_check_update.setText("Checking…")
-        self._btn_download_update.setVisible(False)
+        self._btn_install_update.setVisible(False)
         self._update_status.setText("")
 
         self._checker = UpdateChecker(self)
