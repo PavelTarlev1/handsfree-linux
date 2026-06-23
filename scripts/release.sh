@@ -13,34 +13,50 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
+# Revert everything if something goes wrong
+cleanup() {
+    if [[ $? -ne 0 ]]; then
+        echo
+        echo "Release failed — reverting..."
+        echo "$CURRENT" > "$SCRIPT_DIR/VERSION"
+        git -C "$SCRIPT_DIR" checkout -- VERSION 2>/dev/null || true
+        git -C "$SCRIPT_DIR" tag -d "v$VERSION" 2>/dev/null || true
+        echo "Reverted to $CURRENT"
+    fi
+}
+trap cleanup EXIT
+
 # Bump VERSION file
 echo "$VERSION" > "$SCRIPT_DIR/VERSION"
 echo "Bumped VERSION to $VERSION"
 
 # Commit and tag
 git -C "$SCRIPT_DIR" add VERSION
-git -C "$SCRIPT_DIR" commit -m "chore: bump version to $VERSION"
+git -C "$SCRIPT_DIR" commit -m "feat: v$VERSION"
 git -C "$SCRIPT_DIR" tag "v$VERSION"
 git -C "$SCRIPT_DIR" push
 git -C "$SCRIPT_DIR" push origin "v$VERSION"
 echo "Pushed tag v$VERSION"
 
-# Build tarball
-PARENT="$(dirname "$SCRIPT_DIR")"
-TARBALL="$PARENT/handsfree-linux.tar.gz"
+# Build tarball via git archive (clean, no untracked files)
+TARBALL="/tmp/handsfree-linux.tar.gz"
+git -C "$SCRIPT_DIR" archive --format=tar.gz --prefix="HandsFree-Linux-$VERSION/" "v$VERSION" -o "$TARBALL"
+echo "Tarball: $TARBALL"
 
-tar -czf "$TARBALL" \
-    --exclude='.git' \
-    --exclude='__pycache__' \
-    --exclude='*/__pycache__' \
-    --exclude='*/.pytest_cache' \
-    --exclude='*.pyc' \
-    -C "$PARENT" "$(basename "$SCRIPT_DIR")"
+# Upload to GitHub release
+if command -v gh &>/dev/null; then
+    gh release create "v$VERSION" "$TARBALL" \
+        --repo PavelTarlev1/HandsFree-Linux \
+        --title "v$VERSION" \
+        --notes "> ⚠️ **Still in development — but fully working.**"
+    echo "Release published: https://github.com/PavelTarlev1/handsfree-linux/releases/tag/v$VERSION"
+else
+    echo
+    echo "gh CLI not found. Upload manually:"
+    echo "  https://github.com/PavelTarlev1/handsfree-linux/releases/new"
+    echo "  - Tag: v$VERSION"
+    echo "  - Asset: $TARBALL"
+fi
 
 echo
 echo "=== Done! ==="
-echo "Tarball: $TARBALL"
-echo
-echo "Now go to: https://github.com/PavelTarlev1/handsfree-linux/releases/new"
-echo "  - Choose tag: v$VERSION"
-echo "  - Upload: $TARBALL  (as handsfree-linux.tar.gz)"
