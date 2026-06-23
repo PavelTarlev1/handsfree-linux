@@ -224,7 +224,7 @@ class SLCConnection:
         We (HF) initiate by sending AT+BRSF immediately after connection.
         """
         # Step 1: Exchange supported features
-        self._send(AT.cmd_brsf())
+        self._send(AT.cmd_brsf(self._preferred_codec))
         self._state = SLCState.BRSF_SENT
 
         while not self._stop.is_set() and self._state != SLCState.ESTABLISHED:

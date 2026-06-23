@@ -169,9 +169,17 @@ class HandsFreeApp(QObject):
             return
         try:
             from bluetooth.hfp_profile import HfpProfileManager
+            from audio.msbc import AVAILABLE as _msbc_available
+            _want = self._cfg.bluetooth.preferred_codec
+            _codec = "msbc" if (_want == "msbc" and _msbc_available) else "cvsd"
+            if _want == "msbc" and not _msbc_available:
+                logger.warning(
+                    "mSBC requested but libsbc not installed — using CVSD. "
+                    "Install with: sudo apt-get install libsbc1"
+                )
             self._hfp = HfpProfileManager(
                 adapter=self._cfg.bluetooth.adapter,
-                preferred_codec=self._cfg.bluetooth.preferred_codec,
+                preferred_codec=_codec,
                 on_connected=self._cb_connected,
                 on_disconnected=self._cb_disconnected,
                 on_ring=self._cb_ring,

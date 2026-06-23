@@ -92,11 +92,8 @@ def _extract_params(kind: str, groups: tuple, raw: str) -> dict:
 # HF supported features bitmask (what we tell the phone we support)
 # Bit 0: EC/NR  Bit 1: Call Waiting  Bit 2: CLI  Bit 3: Voice recognition
 # Bit 4: Remote volume  Bit 5: Enhanced call status  Bit 6: Enhanced call control
-# NOTE: Bit 7 (codec negotiation / mSBC) is intentionally NOT set.
-# Our raw BTPROTO_SCO socket path uses the kernel's CVSD codec conversion,
-# which only works for CVSD.  mSBC uses transparent mode where user-space
-# must supply SBC-encoded frames — which we don't do yet.
-HF_FEATURES = (
+# Bit 7: Codec negotiation — set only when mSBC is available (via libsbc)
+_HF_FEATURES_BASE = (
     (1 << 0)  # Echo cancellation / noise reduction
     | (1 << 1)  # Call waiting + three-way calling
     | (1 << 2)  # CLI presentation
@@ -105,20 +102,24 @@ HF_FEATURES = (
     | (1 << 6)  # Enhanced call control
 )
 
+HF_FEATURES = _HF_FEATURES_BASE  # kept for any code that reads it directly
+
 CODEC_CVSD = 1
 CODEC_MSBC = 2
 
 
-def cmd_brsf() -> str:
-    return f"AT+BRSF={HF_FEATURES}"
+def cmd_brsf(preferred: str = "cvsd") -> str:
+    """AT+BRSF — include codec-negotiation bit (7) only when mSBC is supported."""
+    features = _HF_FEATURES_BASE
+    if preferred == "msbc":
+        features |= (1 << 7)
+    return f"AT+BRSF={features}"
 
 
 def cmd_bac(preferred: str = "msbc") -> str:
-    """Bluetooth Available Codecs.
-    Only CVSD is advertised: our raw SCO socket relies on the kernel's
-    CVSD conversion (transparent PCM in/out).  mSBC requires user-space
-    SBC encoding which is not implemented.
-    """
+    """AT+BAC — advertise both CVSD and mSBC when mSBC is supported."""
+    if preferred == "msbc":
+        return f"AT+BAC={CODEC_CVSD},{CODEC_MSBC}"
     return f"AT+BAC={CODEC_CVSD}"
 
 
