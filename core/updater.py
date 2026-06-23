@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import json
+import socket
 import tempfile
 import subprocess
 import urllib.request
@@ -49,9 +50,14 @@ def check_for_update() -> dict | None:
     """Return release info dict if a newer version exists on GitHub, else None.
     Raises on network failure.
     """
-    req = urllib.request.Request(_API, headers=_api_headers())
-    with urllib.request.urlopen(req, timeout=_API_TIMEOUT_S) as resp:
-        data = json.loads(resp.read().decode())
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(_API_TIMEOUT_S)
+    try:
+        req = urllib.request.Request(_API, headers=_api_headers())
+        with urllib.request.urlopen(req, timeout=_API_TIMEOUT_S) as resp:
+            data = json.loads(resp.read().decode())
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
     tag    = data.get("tag_name", "")
     remote = _parse_version(tag)
