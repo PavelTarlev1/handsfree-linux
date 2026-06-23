@@ -72,14 +72,18 @@ class AudioManager:
             logger.error("No device path set — cannot start SCO bridge")
             return
 
-        ok = self._bridge.start(
-            device_path=self._device_path,
-            codec=codec,
-            output_sink=self._call_output_sink,
-            input_source=self._call_input_source,
-            bus=self._dbus_bus,
-            adapter_addr=self._adapter_addr,
-        )
+        try:
+            ok = self._bridge.start(
+                device_path=self._device_path,
+                codec=codec,
+                output_sink=self._call_output_sink,
+                input_source=self._call_input_source,
+                bus=self._dbus_bus,
+                adapter_addr=self._adapter_addr,
+            )
+        except Exception as e:
+            logger.error("SCO bridge raised an exception: %s", e, exc_info=True)
+            return
 
         if ok:
             self._active = True

@@ -275,8 +275,14 @@ class SCOBridge:
 
         self._running = True
         if use_msbc:
-            rx_codec = _msbc.MSBCCodec()
-            tx_codec = _msbc.MSBCCodec()
+            try:
+                rx_codec = _msbc.MSBCCodec()
+                tx_codec = _msbc.MSBCCodec()
+            except Exception as e:
+                logger.error("mSBC codec init failed (%s) — falling back to CVSD", e)
+                use_msbc = False
+
+        if use_msbc:
             t_rx = threading.Thread(
                 target=self._rx_loop_msbc, args=(rx_codec,), name="SCO-RX", daemon=True,
             )
