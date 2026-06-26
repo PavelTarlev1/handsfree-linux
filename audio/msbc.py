@@ -25,7 +25,6 @@ RATE      = 16000
 _H2_SYNC = 0x01
 _H2_SN   = (0x08, 0x38, 0xC8, 0xF8)  # H2 sequence-number nibble cycles
 
-_SBC_MSBC    = 0x04   # sbc_init flag: mSBC mode
 _SBC_BUFSIZE = 512    # safe upper bound for sizeof(sbc_t)
 
 
@@ -35,7 +34,7 @@ def _load_libsbc() -> Optional[_ct.CDLL]:
             continue
         try:
             lib = _ct.CDLL(name, use_errno=True)
-            _ = lib.sbc_init, lib.sbc_decode, lib.sbc_encode, lib.sbc_finish
+            _ = lib.sbc_init_msbc, lib.sbc_decode, lib.sbc_encode, lib.sbc_finish
             logger.debug("Loaded libsbc: %s", name)
             return lib
         except (OSError, AttributeError):
@@ -60,9 +59,9 @@ class MSBCCodec:
             )
         self._lib = _LIB
         self._buf = _ct.create_string_buffer(_SBC_BUFSIZE)
-        ret = self._lib.sbc_init(self._buf, _SBC_MSBC)
+        ret = self._lib.sbc_init_msbc(self._buf, 0)
         if ret < 0:
-            raise RuntimeError(f"sbc_init failed: {ret}")
+            raise RuntimeError(f"sbc_init_msbc failed: {ret}")
         self._sn = 0
 
     def decode(self, packet: bytes) -> Optional[bytes]:
