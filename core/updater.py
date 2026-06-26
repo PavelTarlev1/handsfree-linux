@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import json
+import shlex
 import socket
 import tempfile
 import subprocess
@@ -88,9 +89,9 @@ def apply_update_linux():
     with os.fdopen(fd, "w") as f:
         f.write("#!/usr/bin/env bash\n")
         f.write("sleep 1\n")
-        f.write(f'git -C "{root}" pull origin main\n')
+        f.write(f'git -C {shlex.quote(root)} pull origin main\n')
         f.write(f'rm -- "$0"\n')
-        f.write(f'python3 "{root}/main.py" &\n')
+        f.write(f'python3 {shlex.quote(root + "/main.py")} &\n')
 
     os.chmod(script, 0o755)
     subprocess.Popen(

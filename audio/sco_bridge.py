@@ -140,7 +140,10 @@ class SCOBridge:
                     proc.terminate()
                     proc.wait(timeout=2)
                 except Exception:
-                    pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
         self._play_proc = None
         self._rec_proc  = None
 
@@ -274,12 +277,16 @@ class SCOBridge:
                     codec_name, output_sink or "(default)", input_source or "(default)")
 
         self._running = True
+        rx_codec = tx_codec = None
         if use_msbc:
             try:
                 rx_codec = _msbc.MSBCCodec()
                 tx_codec = _msbc.MSBCCodec()
             except Exception as e:
                 logger.error("mSBC codec init failed (%s) — falling back to CVSD", e)
+                if rx_codec:
+                    rx_codec.close()
+                rx_codec = tx_codec = None
                 use_msbc = False
 
         if use_msbc:

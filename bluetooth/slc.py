@@ -379,7 +379,7 @@ class SLCConnection:
             if value in (2, 3):
                 # outgoing-dial or outgoing-alerting (ringing on remote side)
                 self._call_state = CallState.OUTGOING
-            elif value == 0 and self._call_state in (CallState.INCOMING, CallState.OUTGOING):
+            elif value == 0 and self._call_state in (CallState.INCOMING, CallState.OUTGOING) and self._call_state != CallState.ACTIVE:
                 # callsetup went to idle without call becoming active:
                 # incoming → missed/rejected; outgoing → no answer / cancelled
                 self._call_state = CallState.IDLE

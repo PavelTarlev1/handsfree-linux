@@ -56,6 +56,7 @@ class Ringer:
         if self._thread is None:
             return
         self._stop_event.set()
+        self._thread.join(timeout=2)
         self._thread = None
         logger.debug("Ringer stopped")
 

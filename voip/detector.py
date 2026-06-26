@@ -133,9 +133,8 @@ class VoIPDetector:
                 if not entry.name.isdigit():
                     continue
                 try:
-                    comm = (
-                        open(f"/proc/{entry.name}/comm").read().strip().lower()
-                    )
+                    with open(f"/proc/{entry.name}/comm") as fh:
+                        comm = fh.read().strip().lower()
                     if comm in self._process_names:
                         return True
                 except (PermissionError, FileNotFoundError, OSError):

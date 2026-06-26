@@ -1878,7 +1878,8 @@ class MainWindow(QMainWindow):
         idx = self._device_combo.currentIndex()
         if idx >= 0:
             path = self._device_combo.itemData(idx)
-            self.connect_requested.emit(path)
+            if path:
+                self.connect_requested.emit(path)
 
     # ── Style ─────────────────────────────────────────────────────────────────
 

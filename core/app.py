@@ -311,6 +311,7 @@ class HandsFreeApp(QObject):
 
     @pyqtSlot(str, str)
     def _on_connected(self, device_path: str, device_name: str):
+        self._manual_disconnect = False
         self._current_device_path = device_path
         self._current_device_name = device_name
         self._tray.set_connected(device_name)
