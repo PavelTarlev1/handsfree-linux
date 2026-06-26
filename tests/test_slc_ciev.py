@@ -273,3 +273,38 @@ class TestApplyCindValues:
         slc._indicator_map = {1: "call", 2: "callsetup"}
         slc._apply_cind_values([0, 0])
         assert slc._call_state == CallState.IDLE
+
+
+# ── callsetup=0 guard when call is already ACTIVE ────────────────────────────
+
+class TestCallsetupActiveGuard:
+    def test_callsetup_0_does_not_end_active_call(self):
+        """Some phones send callsetup=0 after call=1 — must not end the call."""
+        ended = []
+        slc = _make_slc(on_call_ended=lambda: ended.append("ended"))
+        slc._call_state = CallState.ACTIVE
+
+        slc._handle_ciev({"index": 2, "value": 0})
+
+        assert ended == [], "on_call_ended must not fire when call is already ACTIVE"
+        assert slc._call_state == CallState.ACTIVE
+
+    def test_callsetup_0_from_incoming_still_fires_ended(self):
+        """callsetup=0 from INCOMING (missed call) must still fire on_call_ended."""
+        ended = []
+        slc = _make_slc(on_call_ended=lambda: ended.append("ended"))
+        slc._call_state = CallState.INCOMING
+
+        slc._handle_ciev({"index": 2, "value": 0})
+
+        assert ended == ["ended"]
+
+    def test_callsetup_0_from_outgoing_still_fires_ended(self):
+        """callsetup=0 from OUTGOING (no answer) must still fire on_call_ended."""
+        ended = []
+        slc = _make_slc(on_call_ended=lambda: ended.append("ended"))
+        slc._call_state = CallState.OUTGOING
+
+        slc._handle_ciev({"index": 2, "value": 0})
+
+        assert ended == ["ended"]

@@ -113,3 +113,45 @@ class TestManualDisconnectFlag:
 
         HandsFreeApp._cb_bt_powered(app, False)
         bridge.sig_bt_powered.emit.assert_called_with(False)
+
+
+class TestManualDisconnectResetOnAutoReconnect:
+    def _connected_app(self):
+        return types.SimpleNamespace(
+            _manual_disconnect=True,
+            _current_device_path=None,
+            _current_device_name=None,
+            _tray=MagicMock(),
+            _window=MagicMock(),
+            _cfg=MagicMock(),
+            _store=MagicMock(count=lambda: 0),
+            _refresh_devices=MagicMock(),
+            _should_sync=MagicMock(return_value=False),
+        )
+
+    def test_manual_disconnect_cleared_on_auto_reconnect(self):
+        """Phone reconnecting autonomously must clear _manual_disconnect."""
+        from core.app import HandsFreeApp
+
+        app = self._connected_app()
+        assert app._manual_disconnect is True
+
+        HandsFreeApp._on_connected(app, "/dev/AA", "MyPhone")
+
+        assert app._manual_disconnect is False
+
+    def test_auto_reconnect_works_after_phone_reconnects(self):
+        """After phone auto-reconnects, a subsequent drop must schedule reconnect."""
+        from core.app import HandsFreeApp
+
+        app = self._connected_app()
+        HandsFreeApp._on_connected(app, "/dev/AA", "MyPhone")
+
+        scheduled = []
+        app._current_device_path = "/dev/AA"
+        app._current_device_name = "MyPhone"
+        app._schedule_reconnect = lambda p: scheduled.append(p)
+
+        HandsFreeApp._on_disconnected(app, "/dev/AA")
+
+        assert "/dev/AA" in scheduled

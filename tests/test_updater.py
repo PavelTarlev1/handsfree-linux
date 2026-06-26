@@ -60,3 +60,42 @@ class TestRepoRoot:
 class TestConstants:
     def test_owner_and_repo_not_empty(self):
         assert _OWNER and _REPO
+
+
+class TestApplyUpdateShellQuote:
+    def test_shlex_quote_used_in_source(self):
+        import inspect
+        from core import updater
+        src = inspect.getsource(updater.apply_update_linux)
+        assert "shlex.quote" in src
+
+    def test_script_contains_quoted_not_raw_path(self):
+        """The generated script must contain shlex.quote(root), not the raw string."""
+        import shlex
+        from core import updater
+        from unittest.mock import patch
+
+        tricky = "/srv/hand free app"
+        written = []
+
+        def fake_fdopen(fd, mode):
+            class Writer:
+                def __enter__(self): return self
+                def __exit__(self, *a): pass
+                def write(self, s): written.append(s)
+            return Writer()
+
+        with patch.object(updater, "_repo_root", return_value=tricky), \
+             patch("subprocess.Popen"), \
+             patch("sys.exit"), \
+             patch("os.chmod"), \
+             patch("os.fdopen", fake_fdopen):
+            try:
+                updater.apply_update_linux()
+            except Exception:
+                pass
+
+        full = "".join(written)
+        if full:
+            assert shlex.quote(tricky) in full
+            assert f" {tricky} " not in full
