@@ -1,5 +1,6 @@
 """Tests for audio/sco_bridge.py — SCO audio bridge."""
 import subprocess
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -30,6 +31,22 @@ class TestSCOBridgeStop:
 
 
 class TestSCOBridgeMSBCInit:
+    """Patch threading.Thread so no real loops spin during tests."""
+
+    def _patched_start_audio(self, bridge, codec, msbc_mod, msbc_side_effect):
+        fake_popen = MagicMock(
+            return_value=MagicMock(stdin=MagicMock(), stdout=MagicMock())
+        )
+        fake_thread = MagicMock(spec=threading.Thread)
+
+        with patch.object(msbc_mod, "MSBCCodec", side_effect=msbc_side_effect), \
+             patch.object(msbc_mod, "AVAILABLE", True), \
+             patch("audio.sco_bridge.subprocess.Popen", fake_popen), \
+             patch("audio.sco_bridge.socket.fromfd", return_value=MagicMock()), \
+             patch("audio.sco_bridge.threading.Thread", return_value=fake_thread), \
+             patch("os.close"):
+            return bridge._start_audio(3, "", "", codec)
+
     def test_no_name_error_when_msbc_init_raises(self):
         """Before fix: rx_codec unbound → NameError. Now falls back to CVSD."""
         import audio.msbc as msbc_mod
@@ -37,18 +54,10 @@ class TestSCOBridgeMSBCInit:
         from bluetooth.at_handler import CODEC_MSBC
 
         bridge = SCOBridge()
-        fake_popen = MagicMock(
-            return_value=MagicMock(stdin=MagicMock(), stdout=MagicMock())
+        result = self._patched_start_audio(
+            bridge, CODEC_MSBC, msbc_mod,
+            RuntimeError("sbc_init_msbc failed: -1"),
         )
-
-        with patch.object(msbc_mod, "MSBCCodec",
-                          side_effect=RuntimeError("sbc_init_msbc failed: -1")), \
-             patch.object(msbc_mod, "AVAILABLE", True), \
-             patch("audio.sco_bridge.subprocess.Popen", fake_popen), \
-             patch("audio.sco_bridge.socket.fromfd", return_value=MagicMock()), \
-             patch("os.close"):
-            result = bridge._start_audio(3, "", "", CODEC_MSBC)
-
         assert result in (True, False)
 
     def test_rx_codec_closed_when_tx_codec_raises(self):
@@ -67,15 +76,5 @@ class TestSCOBridgeMSBCInit:
                 return rx
             raise RuntimeError("sbc_init_msbc failed")
 
-        fake_popen = MagicMock(
-            return_value=MagicMock(stdin=MagicMock(), stdout=MagicMock())
-        )
-
-        with patch.object(msbc_mod, "MSBCCodec", side_effect=make_codec), \
-             patch.object(msbc_mod, "AVAILABLE", True), \
-             patch("audio.sco_bridge.subprocess.Popen", fake_popen), \
-             patch("audio.sco_bridge.socket.fromfd", return_value=MagicMock()), \
-             patch("os.close"):
-            bridge._start_audio(3, "", "", CODEC_MSBC)
-
+        self._patched_start_audio(bridge, CODEC_MSBC, msbc_mod, make_codec)
         rx.close.assert_called_once()

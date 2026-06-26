@@ -63,42 +63,45 @@ class TestConnectAuthError:
         client = self._client()
         exc = Exception("OBEX error 0x41")
 
-        with patch.object(client, "_ensure_obexd", return_value=True):
-            with patch.object(client, "_get_session_bus") as mock_bus:
-                mock_bus.return_value.get_object.return_value = MagicMock()
-                obex_client = MagicMock()
-                obex_client.CreateSession.side_effect = exc
-                import dbus
-                with patch("dbus.Interface", return_value=obex_client):
-                    with pytest.raises(PBAPUnauthorizedError):
-                        client.connect("AA:BB:CC:DD:EE:FF")
+        with patch.object(client, "_ensure_obexd", return_value=True), \
+             patch.object(client, "_find_pbap_channel", return_value=None), \
+             patch.object(client, "_get_session_bus") as mock_bus:
+            mock_bus.return_value.get_object.return_value = MagicMock()
+            obex_client = MagicMock()
+            obex_client.CreateSession.side_effect = exc
+            import dbus
+            with patch("dbus.Interface", return_value=obex_client):
+                with pytest.raises(PBAPUnauthorizedError):
+                    client.connect("AA:BB:CC:DD:EE:FF")
 
     def test_unauthorized_in_message_raises_unauthorized(self):
         client = self._client()
         exc = Exception("Unauthorized access denied")
 
-        with patch.object(client, "_ensure_obexd", return_value=True):
-            with patch.object(client, "_get_session_bus") as mock_bus:
-                mock_bus.return_value.get_object.return_value = MagicMock()
-                obex_client = MagicMock()
-                obex_client.CreateSession.side_effect = exc
-                import dbus
-                with patch("dbus.Interface", return_value=obex_client):
-                    with pytest.raises(PBAPUnauthorizedError):
-                        client.connect("AA:BB:CC:DD:EE:FF")
+        with patch.object(client, "_ensure_obexd", return_value=True), \
+             patch.object(client, "_find_pbap_channel", return_value=None), \
+             patch.object(client, "_get_session_bus") as mock_bus:
+            mock_bus.return_value.get_object.return_value = MagicMock()
+            obex_client = MagicMock()
+            obex_client.CreateSession.side_effect = exc
+            import dbus
+            with patch("dbus.Interface", return_value=obex_client):
+                with pytest.raises(PBAPUnauthorizedError):
+                    client.connect("AA:BB:CC:DD:EE:FF")
 
     def test_generic_error_returns_false(self):
         client = self._client()
         exc = Exception("Connection refused")
 
-        with patch.object(client, "_ensure_obexd", return_value=True):
-            with patch.object(client, "_get_session_bus") as mock_bus:
-                mock_bus.return_value.get_object.return_value = MagicMock()
-                obex_client = MagicMock()
-                obex_client.CreateSession.side_effect = exc
-                import dbus
-                with patch("dbus.Interface", return_value=obex_client):
-                    result = client.connect("AA:BB:CC:DD:EE:FF")
+        with patch.object(client, "_ensure_obexd", return_value=True), \
+             patch.object(client, "_find_pbap_channel", return_value=None), \
+             patch.object(client, "_get_session_bus") as mock_bus:
+            mock_bus.return_value.get_object.return_value = MagicMock()
+            obex_client = MagicMock()
+            obex_client.CreateSession.side_effect = exc
+            import dbus
+            with patch("dbus.Interface", return_value=obex_client):
+                result = client.connect("AA:BB:CC:DD:EE:FF")
         assert result is False
 
     def test_connect_returns_false_when_obexd_unavailable(self):
