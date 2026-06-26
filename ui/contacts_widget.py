@@ -30,10 +30,14 @@ _AVATAR_SIZE = 42   # px — diameter of the bubble
 
 
 def _make_initials(name: str) -> str:
-    """Return up to 2 initials from a display name."""
+    """Return up to 2 initials from a display name, or last 4 digits for phone numbers."""
     words = name.strip().split()
     if not words or not words[0]:
         return "?"
+    # Phone number (all digits/+/-) — show last 4 digits in the bubble
+    digits = name.replace("+", "").replace("-", "").replace(" ", "")
+    if digits.isdigit():
+        return digits[-4:]
     if len(words) == 1:
         return words[0][0].upper()
     return (words[0][0] + words[-1][0]).upper()

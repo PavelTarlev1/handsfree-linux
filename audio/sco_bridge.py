@@ -76,6 +76,20 @@ class SCOBridge:
         self._rec_proc:  Optional[subprocess.Popen] = None
         self._running = False
         self._threads: list[threading.Thread] = []
+        # Set True when mSBC decode fails; subsequent calls use CVSD directly.
+        # Cleared automatically when the app upgrades (new version may have fixed mSBC).
+        from core.config import load_pref, save_pref
+        from core.version import __version__
+        self._msbc_failed: bool = load_pref("msbc_transparent_failed", False)
+        if self._msbc_failed:
+            flag_version = load_pref("msbc_transparent_failed_version", "0.0.0")
+            if flag_version != __version__:
+                self._msbc_failed = False
+                save_pref("msbc_transparent_failed", False)
+                logger.info(
+                    "mSBC failure flag cleared after upgrade from %s → %s; "
+                    "mSBC will be retried", flag_version, __version__,
+                )
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
@@ -99,9 +113,18 @@ class SCOBridge:
         if not remote_addr:
             logger.error("Cannot derive BT address from %s", device_path)
             return False
+        self._remote_addr = remote_addr
 
         from bluetooth.at_handler import CODEC_MSBC
         want_msbc = (codec == CODEC_MSBC)
+
+        if want_msbc and self._msbc_failed:
+            logger.info(
+                "mSBC failed on a previous call — using CVSD 8kHz directly. "
+                "Set preferred_codec = 'cvsd' in config to make this permanent."
+            )
+            want_msbc = False
+            codec = 1  # CVSD
 
         # Attempt 1 — BlueZ MediaTransport1 (codec handled by BlueZ)
         if bus is not None:
@@ -192,6 +215,7 @@ class SCOBridge:
         remote_addr: str,
         attempts: int = 8,
         voice_setting: Optional[int] = None,
+        retry_delay: float = 0.4,
     ) -> int:
         """
         Try to connect a BTPROTO_SCO socket to remote_addr.
@@ -206,7 +230,7 @@ class SCOBridge:
                 logger.info("SCO connected to %s (attempt %d)", remote_addr, i + 1)
                 return fd
             if i < attempts - 1:
-                threading.Event().wait(0.4)
+                threading.Event().wait(retry_delay)
         logger.warning("SCO connect failed after %d attempts to %s", attempts, remote_addr)
         return -1
 
@@ -239,6 +263,9 @@ class SCOBridge:
             except OSError:
                 pass
             return False
+
+        self._output_sink  = output_sink
+        self._input_source = input_source
 
         rate = _msbc.RATE if use_msbc else _CVSD_RATE
         latency_arg = _pacat_latency_arg()
@@ -305,6 +332,64 @@ class SCOBridge:
         self._threads = [t_rx, t_tx]
         return True
 
+    # ── CVSD auto-fallback ────────────────────────────────────────────────────
+
+    def _switch_to_cvsd_fallback(self):
+        """
+        Called when mSBC decode fails consistently.
+
+        When the phone commits to mSBC audio routing for an SCO link, it will
+        NOT re-route audio to a new SCO link reconnected as CVSD mid-call —
+        the reconnect always produces silence on the current call.
+
+        Instead we:
+          1. Mark _msbc_failed so the NEXT call uses CVSD from the very start
+             (before the phone commits to any codec routing).
+          2. Stop the dead mSBC loops cleanly.
+          3. Keep the SCO socket open so the HFP call state stays intact and
+             the user can hang up normally from the UI.
+        """
+        self._msbc_failed = True
+        from core.config import save_pref
+        from core.version import __version__
+        save_pref("msbc_transparent_failed", True)
+        save_pref("msbc_transparent_failed_version", __version__)
+        logger.warning(
+            "mSBC audio failed — adapter does not deliver valid mSBC frames in "
+            "transparent SCO mode. Audio is unavailable for this call. "
+            "Hang up and redial; the next call will use CVSD (8 kHz) automatically. "
+            "For a permanent fix: set preferred_codec = 'cvsd' in your config file."
+        )
+
+        self._running = False
+
+        # Unblock TX loop (stuck on rec_proc.stdout.read)
+        old_rec = self._rec_proc
+        self._rec_proc = None
+        if old_rec:
+            try:
+                old_rec.terminate()
+            except Exception:
+                pass
+
+        # Join mSBC threads
+        for t in list(self._threads):
+            t.join(timeout=3)
+        self._threads.clear()
+
+        # Stop pacat processes (audio is dead anyway)
+        for proc in (self._play_proc,):
+            if proc:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=1)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        self._play_proc = None
+
     # ── CVSD loops (8 kHz, kernel handles codec) ──────────────────────────────
 
     def _rx_loop_cvsd(self):
@@ -354,17 +439,40 @@ class SCOBridge:
         from audio.msbc import MTU as MSBC_MTU  # already cached in sys.modules
         sock = self._sco_sock
         proc = self._play_proc
+        _consecutive_failures = 0
+        _first_packet_logged = False
         try:
             while self._running and sock and proc:
                 packet = sock.recv(MSBC_MTU)
                 if not packet:
                     break
+                if not _first_packet_logged:
+                    logger.debug(
+                        "mSBC RX first packet: len=%d byte0=0x%02x",
+                        len(packet), packet[0] if packet else -1,
+                    )
+                    _first_packet_logged = True
                 pcm = codec.decode(packet)
                 if pcm:
+                    _consecutive_failures = 0
                     try:
                         proc.stdin.write(pcm)
                         proc.stdin.flush()
                     except BrokenPipeError:
+                        break
+                else:
+                    _consecutive_failures += 1
+                    if _consecutive_failures == 20:
+                        logger.warning(
+                            "mSBC RX: 20 consecutive decode failures "
+                            "(packet len=%d byte0=0x%02x) — "
+                            "adapter may not support transparent SCO; switching to CVSD 8kHz",
+                            len(packet), packet[0] if packet else -1,
+                        )
+                        threading.Thread(
+                            target=self._switch_to_cvsd_fallback,
+                            daemon=True, name="SCO-CVSD-Fallback",
+                        ).start()
                         break
         except OSError:
             pass

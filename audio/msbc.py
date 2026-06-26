@@ -65,10 +65,19 @@ class MSBCCodec:
         self._sn = 0
 
     def decode(self, packet: bytes) -> Optional[bytes]:
-        """60-byte mSBC SCO packet → 240 bytes s16le PCM at 16 kHz."""
-        if len(packet) < 2 + FRAME_LEN or packet[0] != _H2_SYNC:
+        """60-byte mSBC SCO packet → 240 bytes s16le PCM at 16 kHz.
+
+        Some adapters deliver H2-framed packets [0x01][SN][57-byte SBC][pad],
+        others deliver a raw SBC frame with no H2 header.  We try both.
+        """
+        if len(packet) >= 2 + FRAME_LEN and packet[0] == _H2_SYNC:
+            sbc_frame = packet[2 : 2 + FRAME_LEN]
+        elif len(packet) >= FRAME_LEN:
+            # No H2 header — adapter delivers raw SBC frame directly
+            sbc_frame = packet[:FRAME_LEN]
+        else:
+            logger.debug("mSBC: short packet (%d bytes) dropped", len(packet))
             return None
-        sbc_frame = packet[2 : 2 + FRAME_LEN]
         out = _ct.create_string_buffer(PCM_BYTES * 2)
         written = _ct.c_size_t(0)
         r = self._lib.sbc_decode(
@@ -76,7 +85,10 @@ class MSBCCodec:
             out, len(out), _ct.byref(written),
         )
         if r < 0:
-            logger.debug("sbc_decode error %d", r)
+            logger.warning("sbc_decode error %d (frame bytes 0-3: %s)", r, sbc_frame[:4].hex())
+            return None
+        if written.value == 0:
+            logger.warning("sbc_decode wrote 0 bytes")
             return None
         return bytes(out[: written.value])
 

@@ -117,9 +117,17 @@ def cmd_brsf(preferred: str = "cvsd") -> str:
 
 
 def cmd_bac(preferred: str = "msbc") -> str:
-    """AT+BAC — advertise both CVSD and mSBC when mSBC is supported."""
+    """AT+BAC — advertise supported codecs.
+
+    If mSBC previously failed (adapter doesn't support transparent SCO),
+    advertise CVSD only so the phone negotiates CVSD from the start and
+    sends CVSD audio over the air.  Otherwise the SCO voice setting and
+    the HFP codec negotiation would be mismatched, producing garbled audio.
+    """
     if preferred == "msbc":
-        return f"AT+BAC={CODEC_CVSD},{CODEC_MSBC}"
+        from core.config import load_pref
+        if not load_pref("msbc_transparent_failed", False):
+            return f"AT+BAC={CODEC_CVSD},{CODEC_MSBC}"
     return f"AT+BAC={CODEC_CVSD}"
 
 

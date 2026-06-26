@@ -54,12 +54,15 @@ class TestMSBCDecode:
         assert result is not None
         assert len(result) == 240
 
-    def test_bad_h2_sync_returns_none(self):
+    def test_non_h2_packet_falls_back_to_raw_sbc(self):
+        """Packets without H2 sync byte are tried as raw SBC frames (adapter compat)."""
         from audio import msbc
-        lib = _make_lib()
+        lib = _make_lib(decode_output=b"\x01\x02" * 120)
         codec = _codec_with(lib)
-        packet = bytes([0xFF, 0x08]) + b"\x00" * 57 + b"\x00"  # wrong sync byte
-        assert codec.decode(packet) is None
+        # 60-byte packet without H2 header (byte0 != 0x01) — should still decode
+        packet = bytes([0xFF, 0x08]) + b"\x00" * 57 + b"\x00"
+        result = codec.decode(packet)
+        assert result is not None  # fallback to raw SBC succeeded
 
     def test_short_packet_returns_none(self):
         from audio import msbc
@@ -137,7 +140,9 @@ class TestMSBCAvailability:
 
     def test_at_handler_bac_advertises_both_with_msbc(self):
         from bluetooth.at_handler import cmd_bac, CODEC_CVSD, CODEC_MSBC
-        result = cmd_bac("msbc")
+        from unittest.mock import patch
+        with patch("core.config.load_pref", return_value=False):
+            result = cmd_bac("msbc")
         assert str(CODEC_CVSD) in result
         assert str(CODEC_MSBC) in result
 

@@ -1838,11 +1838,12 @@ class MainWindow(QMainWindow):
             else:
                 dur = ""
 
-            # Format timestamp
+            # Format timestamp — convert UTC → local time before display
             try:
                 dt = datetime.fromisoformat(entry.started_at.replace("Z", "+00:00"))
-                today = datetime.now(timezone.utc).date()
-                ts = dt.strftime("%H:%M") if dt.date() == today else dt.strftime("%d %b  %H:%M")
+                dt_local = dt.astimezone()          # system local timezone
+                today = datetime.now().date()       # local today
+                ts = dt_local.strftime("%H:%M") if dt_local.date() == today else dt_local.strftime("%d %b  %H:%M")
             except Exception:
                 ts = entry.started_at[:16]
 

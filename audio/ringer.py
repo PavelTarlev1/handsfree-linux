@@ -84,6 +84,10 @@ class Ringer:
                 while proc.poll() is None:
                     if self._stop_event.is_set():
                         proc.terminate()
+                        try:
+                            proc.wait(timeout=1)
+                        except Exception:
+                            pass
                         return
                     time.sleep(0.05)
             else:

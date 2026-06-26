@@ -138,7 +138,9 @@ class TestCommandBuilders:
         assert msbc_val & (1 << 7)
 
     def test_cmd_bac_msbc_advertises_both(self):
-        assert cmd_bac("msbc") == "AT+BAC=1,2"
+        from unittest.mock import patch
+        with patch("core.config.load_pref", return_value=False):
+            assert cmd_bac("msbc") == "AT+BAC=1,2"
 
     def test_cmd_bac_cvsd_advertises_cvsd_only(self):
         assert cmd_bac("cvsd") == "AT+BAC=1"
