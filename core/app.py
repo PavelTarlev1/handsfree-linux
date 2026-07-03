@@ -191,6 +191,7 @@ class HandsFreeApp(QObject):
                 on_bt_powered=self._cb_bt_powered,
             )
             self._hfp.start()
+            self._refresh_devices()
         except Exception as e:
             logger.exception("Failed to start Bluetooth HFP: %s", e)
             self._hfp = None
@@ -749,10 +750,9 @@ class HandsFreeApp(QObject):
                 if "AlreadyConnected" in output or "AlreadyExists" in output:
                     logger.debug("HFP ConnectProfile: already connected")
                     return
-                if "InProgress" in output or "br-connection-busy" in output:
-                    # Phone is already mid-connection — wait and let it finish
-                    logger.debug("HFP ConnectProfile: in progress, waiting (attempt %d)", attempt + 1)
-                    time.sleep(3)
+                if ("InProgress" in output or "br-connection-busy" in output
+                        or "br-connection-create-socket" in output):
+                    logger.debug("HFP ConnectProfile: busy (attempt %d)", attempt + 1)
                     continue
                 logger.error("HFP ConnectProfile failed: %s", output)
                 self._bridge.sig_connect_failed.emit()

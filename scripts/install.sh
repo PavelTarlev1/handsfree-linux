@@ -5,17 +5,39 @@ set -e
 echo "=== HandsFree installer ==="
 echo
 
+# Detect distro family
+if command -v pacman &>/dev/null; then
+    DISTRO="arch"
+elif command -v apt-get &>/dev/null; then
+    DISTRO="debian"
+else
+    echo "Unsupported distro — please install dependencies manually."
+    echo "Required: bluez, bluez-obexd, python3-dbus, python3-gi, PyQt6, vobject, psutil"
+    exit 1
+fi
+
 # System packages
 echo "[1/3] Installing system dependencies..."
-sudo apt-get update -qq
-sudo apt-get install -y \
-    python3-pip \
-    python3-dbus \
-    python3-gi \
-    bluez \
-    bluez-obexd \
-    libdbus-1-dev \
-    libglib2.0-dev
+if [ "$DISTRO" = "arch" ]; then
+    sudo pacman -Sy --needed --noconfirm \
+        python-pip \
+        python-dbus \
+        python-gobject \
+        bluez \
+        bluez-obex \
+        dbus \
+        glib2
+else
+    sudo apt-get update -qq
+    sudo apt-get install -y \
+        python3-pip \
+        python3-dbus \
+        python3-gi \
+        bluez \
+        bluez-obexd \
+        libdbus-1-dev \
+        libglib2.0-dev
+fi
 
 # Python packages
 echo "[2/3] Installing Python packages..."

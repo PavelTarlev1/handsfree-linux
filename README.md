@@ -61,11 +61,15 @@ Any Linux computer or laptop with Bluetooth 2.1 or newer. This covers virtually 
 
 ### Linux
 
+**Ubuntu / Debian:**
 ```bash
-# System packages
 sudo apt install bluez bluez-obexd python3-dbus python3-gi
+pip install -r requirements.txt
+```
 
-# Python packages
+**Arch / CachyOS / Manjaro:**
+```bash
+sudo pacman -Sy --needed python-dbus python-gobject bluez bluez-obex
 pip install -r requirements.txt
 ```
 

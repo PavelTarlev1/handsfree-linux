@@ -1583,7 +1583,32 @@ class MainWindow(QMainWindow):
         self._device_combo.setVisible(False)
         self._btn_connect.setVisible(False)
         self._status_label.setText(f"Connecting to {name}…")
-        # dot stays ⚠ amber
+
+        # Animate 3 dots cycling green brightness: ● ● ●
+        if not hasattr(self, "_dot_timer"):
+            self._dot_timer = QTimer(self)
+            self._dot_timer.setInterval(400)
+            self._dot_anim_step = 0
+            def _tick_dots():
+                step = self._dot_anim_step % 3
+                colors = [
+                    ["#34a853", "#1a5c2e", "#1a5c2e"],
+                    ["#1a5c2e", "#34a853", "#1a5c2e"],
+                    ["#1a5c2e", "#1a5c2e", "#34a853"],
+                ]
+                c = colors[step]
+                self._status_dot.setText(
+                    f'<span style="color:{c[0]}">●</span> '
+                    f'<span style="color:{c[1]}">●</span> '
+                    f'<span style="color:{c[2]}">●</span>'
+                )
+                self._dot_anim_step += 1
+            self._dot_timer.timeout.connect(_tick_dots)
+        self._status_dot.setTextFormat(Qt.TextFormat.RichText)
+        self._dot_anim_step = 0
+        self._dot_timer.start()
+        self._dot_timer.timeout.emit()  # show immediately
+
         if not hasattr(self, "_connect_timeout"):
             self._connect_timeout = QTimer(self)
             self._connect_timeout.setSingleShot(True)
@@ -1594,6 +1619,9 @@ class MainWindow(QMainWindow):
     def on_connected(self, device_name: str):
         if hasattr(self, "_connect_timeout"):
             self._connect_timeout.stop()
+        if hasattr(self, "_dot_timer"):
+            self._dot_timer.stop()
+        self._status_dot.setTextFormat(Qt.TextFormat.PlainText)
         self._status_dot.setText("●")
         self._status_dot.setStyleSheet("color: #34a853; font-size: 14px; background: transparent;")
         self._status_label.setText(device_name)
@@ -1608,6 +1636,9 @@ class MainWindow(QMainWindow):
     def on_disconnected(self):
         if hasattr(self, "_connect_timeout"):
             self._connect_timeout.stop()
+        if hasattr(self, "_dot_timer"):
+            self._dot_timer.stop()
+        self._status_dot.setTextFormat(Qt.TextFormat.PlainText)
         self._status_dot.setText("⚠")
         self._status_dot.setStyleSheet("color: #ffffff; font-size: 14px; background: transparent;")
         self._status_label.setText("Not connected")
