@@ -63,9 +63,16 @@ Any Linux computer or laptop with Bluetooth 2.1 or newer. This covers virtually 
 
 **Ubuntu / Debian:**
 ```bash
-sudo apt install bluez bluez-obexd python3-dbus python3-gi
+sudo apt install bluez bluez-obexd python3-dbus python3-gi python3-venv python3-full
 pip install -r requirements.txt
 ```
+
+> **Ubuntu 24.04+ / Kubuntu 24.04+:** Python is externally managed — use the install script (`bash scripts/install.sh`) which automatically creates a virtualenv, or run manually:
+> ```bash
+> python3 -m venv --system-site-packages .venv
+> .venv/bin/pip install PyQt6 vobject psutil
+> .venv/bin/python3 main.py
+> ```
 
 **Arch / CachyOS / Manjaro:**
 ```bash

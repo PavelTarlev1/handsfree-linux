@@ -191,7 +191,9 @@ class HandsFreeApp(QObject):
                 on_bt_powered=self._cb_bt_powered,
             )
             self._hfp.start()
-            self._refresh_devices()
+            # Delay first refresh so the GLib/D-Bus thread has time to set up _bus
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(1500, self._refresh_devices)
         except Exception as e:
             logger.exception("Failed to start Bluetooth HFP: %s", e)
             self._hfp = None
@@ -417,7 +419,12 @@ class HandsFreeApp(QObject):
             self._call_start_time = time.monotonic()
         self._tray.set_in_call(self._ring_number)
         self._window.on_call_active(self._ring_number)
-        self._audio.on_call_started(self._active_codec)
+        # Run SCO connect in a thread — libc.connect() blocks and would freeze the UI
+        threading.Thread(
+            target=self._audio.on_call_started,
+            args=(self._active_codec,),
+            daemon=True,
+        ).start()
         # Apply saved mic sensitivity
         src = self._cfg.audio.call_input_device or "@DEFAULT_SOURCE@"
         import subprocess as _sp

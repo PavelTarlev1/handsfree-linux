@@ -1851,13 +1851,23 @@ class MainWindow(QMainWindow):
         self._device_combo.blockSignals(False)
 
     def refresh_call_log(self):
+        # Skip re-render if the Call Log tab is not currently visible
+        call_log_idx = next(
+            (i for i in range(self._tabs.count()) if self._tabs.tabText(i) == "Call Log"), -1
+        )
+        if call_log_idx != -1 and self._tabs.currentIndex() != call_log_idx:
+            return
+
         from datetime import datetime, timezone
         self._calllog_list.clear()
         logs = self._store.get_call_log(limit=200)
+        _contact_cache: dict = {}
         for entry in logs:
             contact = self._store.get_contact_by_id(entry.contact_id) if entry.contact_id else None
-            if not contact:
-                contact = self._store.lookup_by_number(entry.number)
+            if not contact and entry.number:
+                if entry.number not in _contact_cache:
+                    _contact_cache[entry.number] = self._store.lookup_by_number(entry.number)
+                contact = _contact_cache[entry.number]
             name = contact.effective_name if contact else entry.number
             photo = contact.photo_data if contact else None
 

@@ -130,6 +130,27 @@ def main():
     if os.path.exists(_icon_path):
         qt_app.setWindowIcon(QIcon(_icon_path))
 
+    # Log unhandled exceptions instead of silently crashing
+    _log = logging.getLogger("main")
+    def _excepthook(exc_type, exc_value, exc_tb):
+        _log.critical("Unhandled exception", exc_info=(exc_type, exc_value, exc_tb))
+    sys.excepthook = _excepthook
+
+    import traceback
+    def _qt_excepthook(exc_type, exc_value, exc_tb):
+        _log.critical("Unhandled exception in Qt slot:\n%s",
+                      "".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
+    from PyQt6.QtCore import pyqtSignal
+    try:
+        from PyQt6.QtWidgets import QApplication as _QApp
+        _QApp.instance()  # already created above
+        import PyQt6.QtCore as _QtCore
+        _QtCore.qInstallMessageHandler(
+            lambda msg_type, context, msg: _log.debug("Qt: %s", msg)
+        )
+    except Exception:
+        pass
+
     from core.app import HandsFreeApp
     app = HandsFreeApp(qt_app)
     app.start()
